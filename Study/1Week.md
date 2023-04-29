@@ -430,9 +430,9 @@ eksctl create cluster --name $CLUSTER_NAME --region=$AWS_DEFAULT_REGION --nodegr
 
 5. 
 
+EKS 생성완료
 
-
-
+![createEKS](https://github.com/jiwonYun9332/AWES-1/blob/1306070741b1b460c26be5b2f3ba146fc30e49dc/Study/images/4_createEKS.png)
 
 
 
