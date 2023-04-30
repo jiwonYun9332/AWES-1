@@ -63,19 +63,6 @@ Amazon EKS에서는 Amazon VPC 통합 네트워킹을 지원하고 있어 파드
 
 Customer VPC는 고객이 관리하는 Worker Node를 호스팅합니다.
 
-클러스터를 퍼블릭 또는 프라이빗하게 구성할 지에 따라 아래 구성과 같이 설정이 달라집니다.
-
-- 퍼블릭 엔드포인트만 해당
-: 이 경우 노드에는 컨트롤 플레인에 연결하기 위한 퍼블릭 IP 주소가 있어야 한다. NAT 게이트웨이의 퍼블릭 IP 주소를 사용할 수 있는 
-인터넷 게이트웨이 또는 NAT 게이트웨이에 대한 경로도 있어야 한다.
-
-- 퍼블릭 및 프라이빗 엔드포인트
-: 이 모드에서 작업자 노드 VPC 내에서 제어 플레인으로의 Kubernetes API 요청은 작업 노드 VPC 내의 EKS 관리 ENI를 통과한다.
-
-- 프라이빗 엔드포인트 전용
-: 인터넷에서 API 서버에 대한 퍼블릭 액세스가 닫힌다. 모든 kubectl 명령은 VPC or AWS VPC or AWS DirectConnect와 같은 연결된 네트워크 내에서
-VPC로 시작되는 경우에만 작동한다.
-
 [출처]
 https://medium.com/beck-et-al/private-kubernetes-cluster-on-aws-using-elastic-kubernetes-service-and-its-challenges-89730e097867
 
@@ -109,12 +96,66 @@ TCP 및 UDP 패킷에 대한 네트워크 라우팅을 처리하고 연결 전�
 출처
 [https://www.argopacific.io/blog/post/architecture-of-kubernetes-cluster]
 
+**etcd**는 한 줄로 요약하면 분산시스템에서 중요한 데이터를 저장할 때 사용할 수 있는 key-value 분산 저장소입니다.
 
+```
+A distributed, reliable key-value store for the most critical data of a distributed system.
+```
 
+k8s에서는 etcd에 cluster의 모든 정보를 저장하고 있는 데이터베이스이며
+etcd를 통해 cluster를 백업/복구할 수 있습니다.
 
+etcd는 k8s에서 중요한 역할을 하고 있어 분산된 환경에 구성하는 것이 좋습니다.
 
+분산된 환경에서 구성된 etcd는 **replicated state machine** 방법을 통해 다른 가용 영역의 etcd가 
+죽더라도 서비스를 정상적으로 제공합니다.
+
+RSM(Replicated state machine)
+: rsm은 command가 들어있는 log 단위로 데이터를 처리하며 데이터의 write를 log append라고 부릅니다.
+
+[출처]
+https://velog.io/@squarebird/Kubernetes-etcd
+
+> eks architecture
+
+![controlplane](https://github.com/jiwonYun9332/AWES-1/blob/f3482f051fbf0f9dc6f48409128b129a2d5be3df/Study/images/7_amazoneks.png)
+
+AWS EKS 서비스에서는 AWS Managed VPC에서 컨트롤 플레인을 제공해줍니다.
+
+api서버와 etcd는 각 3개의 가용 영역에 분산되어 있으며, 로드밸런서를 통해 부하 분산됩니다.
+
+![dateplane](https://github.com/jiwonYun9332/AWES-1/blob/9ca3296196ebed894d6bf409a12c8c9bec5e227e/Study/images/11_dateplane.png)
+
+Customer VPC는 고객의 애플리케이션이 올라가는 워커 노드가 올라가게 됩니다.
+
+클러스터를 퍼블릭 또는 프라이빗하게 구성할 지에 따라 아래 구성과 같이 설정이 달라집니다.
+
+**pulibc**
+
+![public](https://github.com/jiwonYun9332/AWES-1/blob/9ca3296196ebed894d6bf409a12c8c9bec5e227e/Study/images/8_public.png)
+
+퍼블릭 엔드포인트만 해당
+: 이 경우 노드에는 컨트롤 플레인에 연결하기 위한 퍼블릭 IP 주소가 있어야 한다. NAT 게이트웨이의 퍼블릭 IP 주소를 사용할 수 있는 
+인터넷 게이트웨이 또는 NAT 게이트웨이에 대한 경로도 있어야 한다.
+
+**publicprivate**
+
+![publicprivate](https://github.com/jiwonYun9332/AWES-1/blob/9ca3296196ebed894d6bf409a12c8c9bec5e227e/Study/images/9_publicprivate.png)
+
+퍼블릭 및 프라이빗 엔드포인트
+: 이 모드에서 작업자 노드 VPC 내에서 제어 플레인으로의 Kubernetes API 요청은 작업 노드 VPC 내의 EKS 관리 ENI를 통과한다.
+
+**private**
+
+![private](https://github.com/jiwonYun9332/AWES-1/blob/9ca3296196ebed894d6bf409a12c8c9bec5e227e/Study/images/10_private.png)
+
+프라이빗 엔드포인트 전용
+: 인터넷에서 API 서버에 대한 퍼블릭 액세스가 닫힌다. 모든 kubectl 명령은 VPC or AWS VPC or AWS DirectConnect와 같은 연결된 네트워크 내에서
+VPC로 시작되는 경우에만 작동한다.
 
 ## 스터디 배포 실습
+
+![architecture](https://github.com/jiwonYun9332/AWES-1/blob/05df934c1a1dd2b4ab4c1aa225d34ac5d089213f/Study/images/12_aws.png)
 
 1. 사전 준비 작업
 
@@ -496,7 +537,22 @@ EKS 생성완료
 ![createEKS](https://github.com/jiwonYun9332/AWES-1/blob/1306070741b1b460c26be5b2f3ba146fc30e49dc/Study/images/4_createEKS.png)
 
 
+## EKS 1회차 스터디 진행 후 개선사항
 
+- 습득한 지식을 다른 사람에게 공유할 수 있는 글 작성에 어려움을 느낌
+
+원인: 지금까지는 나만 이해할 수 있는 정리를 해왔음
+
+- 어떻게 개선할 것인가? 
+
+: 글 작성 후 주변 지인에게 공유 및 피드백을 받고 한 번 정리한 내용을
+다시 리메이크하여, 올려 EKS를 사람들이 접하게 쉽게 할 것
+
+## EKS 1회차 스터디를 통해 얻은 점
+
+: AWS를 실무에 적용하는 것에 대해 막연하게 느꼈던 부분을 직접적으로 EKS를 배포하고, EKS Architecture 를 draw.io 사이트를 통해
+아키텍처를 작성해보면서, IAM 권한을 할당하고, 보안적으로 우수한 아키텍처에 대한 이해, ec2 상에서의 aws configure 통해 정책 연결 부분을 실습해보면서
+aws 활용 실무에서 운영하는 로직에 대한 그림이 조금 뚜렷해졌다. 
 
 
 
