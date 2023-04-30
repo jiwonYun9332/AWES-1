@@ -153,6 +153,9 @@ Customer VPC는 고객의 애플리케이션이 올라가는 워커 노드가 �
 : 인터넷에서 API 서버에 대한 퍼블릭 액세스가 닫힌다. 모든 kubectl 명령은 VPC or AWS VPC or AWS DirectConnect와 같은 연결된 네트워크 내에서
 VPC로 시작되는 경우에만 작동한다.
 
+출처
+https://awskoreamarketingasset.s3.amazonaws.com/2022%20Summit/pdf/T14S4_Amazon%20EKS%20%EB%A7%88%EC%9D%B4%EA%B7%B8%EB%A0%88%EC%9D%B4%EC%85%98%20%EC%9A%94%EC%A0%90%20%EC%A0%95%EB%A6%AC.pdf
+
 ## 스터디 배포 실습
 
 ![architecture](https://github.com/jiwonYun9332/AWES-1/blob/05df934c1a1dd2b4ab4c1aa225d34ac5d089213f/Study/images/12_aws.png)
