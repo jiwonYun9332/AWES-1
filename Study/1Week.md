@@ -53,7 +53,68 @@ Amazon EKS에서는 Amazon VPC 통합 네트워킹을 지원하고 있어 파드
 대역을 사용할 수 있으며 클러스터 외부와의 통신이 가능하다.
 
 
-> 배포 실습
+## EKS Architecture (+추가)
+
+![eks](https://github.com/jiwonYun9332/AWES-1/blob/d97f916697eda0194fdd843330dd7bebc04c4d20/Study/images/5_eks.png)
+
+**사용 Tool**: draw.io
+
+위 그림에서 AWS VPC는 컨트롤 플레인이 설치되며,
+
+Customer VPC는 고객이 관리하는 Worker Node를 호스팅합니다.
+
+클러스터를 퍼블릭 또는 프라이빗하게 구성할 지에 따라 아래 구성과 같이 설정이 달라집니다.
+
+- 퍼블릭 엔드포인트만 해당
+: 이 경우 노드에는 컨트롤 플레인에 연결하기 위한 퍼블릭 IP 주소가 있어야 한다. NAT 게이트웨이의 퍼블릭 IP 주소를 사용할 수 있는 
+인터넷 게이트웨이 또는 NAT 게이트웨이에 대한 경로도 있어야 한다.
+
+- 퍼블릭 및 프라이빗 엔드포인트
+: 이 모드에서 작업자 노드 VPC 내에서 제어 플레인으로의 Kubernetes API 요청은 작업 노드 VPC 내의 EKS 관리 ENI를 통과한다.
+
+- 프라이빗 엔드포인트 전용
+: 인터넷에서 API 서버에 대한 퍼블릭 액세스가 닫힌다. 모든 kubectl 명령은 VPC or AWS VPC or AWS DirectConnect와 같은 연결된 네트워크 내에서
+VPC로 시작되는 경우에만 작동한다.
+
+[출처]
+https://medium.com/beck-et-al/private-kubernetes-cluster-on-aws-using-elastic-kubernetes-service-and-its-challenges-89730e097867
+
+**위 내용을 이해하기 위해 상세적으로 알아보겠습니다**
+
+> k8s architecture
+
+![k8s](https://github.com/jiwonYun9332/AWES-1/blob/dee88e9dfed270f7478fcd2c68405b7ed286e2b4/Study/images/6_k8s.png)
+
+**사용 Tool**: draw.io
+
+마스터 노드는 Kubernetes 클러스터의 전반적인 관리를 담당하며, 통신, 스케줄링 및 컨트롤러를 처리하는 세 가지 컴포넌트인
+Kube API 서버, 스케줄러, 컨트롤러 관리자로 구성된다.
+
+Kube API 서버를 사용하여 Kubernetes API와 상호 작용할 수 있다.
+
+스케줄러는 생성된 Pods를 감시하며 아직 Node 설계가 되지 않은 Pod를 생성하고 특정 Node에서 실행되도록 Pod를 설계한다.
+
+컨트롤러 관리자는 worker의 상태를 담당하는 노드 컨트롤러, 복제된 컨트롤러에 대해 올바른 수의 Pods를 유지 관리하는 책임을 지는 리플리케이션 컨트롤러, 서비스와 포드를 함께 연결하는
+엔드포인트 컨트롤러가 포함된다. 그리고 액세스 관리를 처리하는 서비스 계정 및 토큰 컨트롤러 마지막으로, 저장된 간단한 분산 키 값인 CD가 있다.
+
+Kubernetes용 CLI인 kubectl application을 사용하여 마스터 노드와 상호 작용하게되며,
+kubectl에는 kubeconfig이라는 설정 파일에는 서버 정보와 API 서버에 접근하기 위한 인증 정보가 있습니다.
+
+워커 노드는 우리가 설치한 애플리케이션이 작동하는 노드로 pod가 노드에 맞게 설계되었는지 확인하는 API 서버와 통신하는 에이전트입니다.
+워커 노드에서는 containerd, docker와 같은 컨테이너 런타임을 통해 pod 컨테이너를 실행합니다. 노드에 탑재된 포드의 상태를 인지하고 master에게 관련 상태 정보를 제공합니다. 
+
+kube-proxy는 단일 작업자 노드에서 서비스에 대한 네트워크 프록시이면서 로드 밸런서입니다.
+TCP 및 UDP 패킷에 대한 네트워크 라우팅을 처리하고 연결 전달을 수행합니다.
+
+출처
+[https://www.argopacific.io/blog/post/architecture-of-kubernetes-cluster]
+
+
+
+
+
+
+## 스터디 배포 실습
 
 1. 사전 준비 작업
 
