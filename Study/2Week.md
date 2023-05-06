@@ -290,10 +290,321 @@ MASQUERADE  all  --  0.0.0.0/0            0.0.0.0/0            /* cali:flqWnvo8y
 
 Overlay 기술 없이 파드 간의 통신이 가능하다.
 
+실습
+
+```
+(eks@myeks:N/A) [root@myeks-bastion-EC2 ~]# kubectl exec -it $PODNAME2 -- ping -c 2 $PODIP3
+PING 192.168.2.91 (192.168.2.91) 56(84) bytes of data.
+64 bytes from 192.168.2.91: icmp_seq=1 ttl=62 time=0.919 ms
+64 bytes from 192.168.2.91: icmp_seq=2 ttl=62 time=0.820 ms
+
+--- 192.168.2.91 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 1011ms
+rtt min/avg/max/mdev = 0.820/0.869/0.919/0.049 ms
+(eks@myeks:N/A) [root@myeks-bastion-EC2 ~]# kubectl exec -it $PODNAME3 -- ping -c 2 $PODIP1
+PING 192.168.3.107 (192.168.3.107) 56(84) bytes of data.
+64 bytes from 192.168.3.107: icmp_seq=1 ttl=62 time=1.48 ms
+64 bytes from 192.168.3.107: icmp_seq=2 ttl=62 time=1.23 ms
+
+--- 192.168.3.107 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 1001ms
+rtt min/avg/max/mdev = 1.231/1.357/1.484/0.126 ms
+(eks@myeks:N/A) [root@myeks-bastion-EC2 ~]# kubectl exec -it $PODNAME1 -- ping -c 2 $PODIP2
+PING 192.168.1.40 (192.168.1.40) 56(84) bytes of data.
+64 bytes from 192.168.1.40: icmp_seq=1 ttl=62 time=1.13 ms
+64 bytes from 192.168.1.40: icmp_seq=2 ttl=62 time=2.02 ms
+```
+
+![tcpdump](https://github.com/jiwonYun9332/AWES-1/blob/a4e0939c1cc6022ed28b7c94a760ca9946c4317a/Study/images/2_11_tcpdump.png)
+
+파드 간의 통신을 확인할 수 있다.
+
+### 파드 외부 통신
+
+파드에서 외부 www.google.com 으로 ping을 보내 외부 통신이 가능한 지 확인한다.
+
+```
+# kubectl exec -it $PODNAME2 -- ping -c 1 www.google.com
+```
+
+```
+$ sudo tcpdump -i any -nn icmp
+tcpdump: verbose output suppressed, use -v or -vv for full protocol decode
+listening on any, link-type LINUX_SLL (Linux cooked), capture size 262144 bytes
+19:36:00.841769 IP 192.168.1.40 > 172.217.175.36: ICMP echo request, id 10290, seq 1, length 64
+19:36:00.841791 IP 192.168.1.29 > 172.217.175.36: ICMP echo request, id 11847, seq 1, length 64
+19:36:00.870177 IP 172.217.175.36 > 192.168.1.29: ICMP echo reply, id 11847, seq 1, length 64
+19:36:00.870212 IP 172.217.175.36 > 192.168.1.40: ICMP echo reply, id 10290, seq 1, length 64
+```
+
+IPTable을 확인하여, eth0 주소인 "192.168.1.29"으로 SNAT 되는 것을 확인할 수 있다.
+
+```
+$ sudo iptables -t nat -S | grep 'A AWS-SNAT-CHAIN'
+-A AWS-SNAT-CHAIN-0 ! -d 192.168.0.0/16 -m comment --comment "AWS SNAT CHAIN" -j AWS-SNAT-CHAIN-1
+-A AWS-SNAT-CHAIN-1 ! -o vlan+ -m comment --comment "AWS, SNAT" -m addrtype ! --dst-type LOCAL -j SNAT --to-source 192.168.1.29 --random-fully
+```
+
+```
+$ sudo conntrack -L -n |grep -v '169.254.169'
+icmp     1 29 src=192.168.1.40 dst=8.8.8.8 type=8 code=0 id=31305 src=8.8.8.8 dst=192.168.1.29 type=0 code=0 id=7780 mark=128 use=1
+tcp      6 431974 ESTABLISHED src=192.168.1.29 dst=15.165.80.13 sport=58860 dport=443 src=15.165.80.13 dst=192.168.1.29 sport=443 dport=54487 [ASSURED] mark=128 use=1
+```
 
 
+### 노드에서 파트 생성 갯수제한
 
 
+각 인스턴스 유형별 최대 ENI 갯수가 다르다.
+awe-node와 kube-proxy의 경우 호스트 IP를 사용하기 때문에 최대 갯수에서는 제외하고 계산한다.
 
+**최대 파드 생성 갯수 공식**
+```
+(Number of network interfaces for the instance type × 
+(the number of IP addressess per network interface - 1)) + 2
+```
+
+EKS 구성한 Node의 인스턴스 유형은 모두 t3.medium 이다.
+
+t3 타입의 인스턴스가 파드를 최대 몇 개까지 생성할 수 있는 지 확인하는 AWS CLI 명령어이다.
+
+```
+# aws ec2 describe-instance-types --filters Name=instance-type,Values=t3.* \
+>  --query "InstanceTypes[].{Type: InstanceType, MaxENI: NetworkInfo.MaximumNetworkInterfaces, IPv4addr: NetworkInfo.Ipv4AddressesPerInterface}" \
+>  --output table
+--------------------------------------
+|        DescribeInstanceTypes       |
++----------+----------+--------------+
+| IPv4addr | MaxENI   |    Type      |
++----------+----------+--------------+
+|  15      |  4       |  t3.2xlarge  |
+|  15      |  4       |  t3.xlarge   |
+|  6       |  3       |  t3.medium   |
+|  12      |  3       |  t3.large    |
+|  2       |  2       |  t3.nano     |
+|  2       |  2       |  t3.micro    |
+|  4       |  3       |  t3.small    |
++----------+----------+--------------+
+
+```
+
+사용가능한 파드IP
+((MaxENI * (IPv4addr-1)) + 2)
+t3.medium 경우 : ((3 * (6 - 1) + 2 ) = 17개
+
+
+```
+# kubectl scale deployment nginx-deployment --replicas=17
+
+# kubectl get pod -o=custom-columns=NAME:.metadata.name,IP:.status.podIP
+NAME                                IP
+nginx-deployment-6fb79bc456-44t7d   192.168.3.222
+nginx-deployment-6fb79bc456-5k6m6   192.168.2.12
+nginx-deployment-6fb79bc456-6lc5f   192.168.2.51
+nginx-deployment-6fb79bc456-bf25x   192.168.1.149
+nginx-deployment-6fb79bc456-cpzzt   192.168.2.91
+nginx-deployment-6fb79bc456-cxc2h   192.168.3.107
+nginx-deployment-6fb79bc456-g22x4   192.168.2.33
+nginx-deployment-6fb79bc456-k5r4p   192.168.1.116
+nginx-deployment-6fb79bc456-lj7hs   192.168.1.221
+nginx-deployment-6fb79bc456-n2lhq   192.168.3.241
+nginx-deployment-6fb79bc456-ns949   192.168.2.104
+nginx-deployment-6fb79bc456-q2ql2   192.168.1.40
+nginx-deployment-6fb79bc456-q7lmr   192.168.3.19
+nginx-deployment-6fb79bc456-rz49w   192.168.3.232
+nginx-deployment-6fb79bc456-swt6m   192.168.3.131
+nginx-deployment-6fb79bc456-x6wdt   192.168.1.46
+nginx-deployment-6fb79bc456-xq98c   192.168.1.133
+```
+
+최대 갯수인 17개의 pod를 생성하였을 때는 모두 ip가 할당되었다. 그러면 30으로 하면 어떻게 될까?
+
+```
+# kubectl scale deployment nginx-deployment --replicas=30
+
+kubectl get pod -o=custom-columns=NAME:.metadata.name,IP:.status.pod
+NAME                                IP
+nginx-deployment-6fb79bc456-44t7d   <none>
+nginx-deployment-6fb79bc456-4pwxv   <none>
+nginx-deployment-6fb79bc456-5k6m6   <none>
+nginx-deployment-6fb79bc456-6lc5f   <none>
+nginx-deployment-6fb79bc456-77n9z   <none>
+nginx-deployment-6fb79bc456-8xxcb   <none>
+nginx-deployment-6fb79bc456-b4tl2   <none>
+nginx-deployment-6fb79bc456-bf25x   <none>
+nginx-deployment-6fb79bc456-cjrfl   <none>
+nginx-deployment-6fb79bc456-cpzzt   <none>
+nginx-deployment-6fb79bc456-cxc2h   <none>
+nginx-deployment-6fb79bc456-d47jn   <none>
+nginx-deployment-6fb79bc456-g22x4   <none>
+nginx-deployment-6fb79bc456-k5r4p   <none>
+nginx-deployment-6fb79bc456-krtqt   <none>
+nginx-deployment-6fb79bc456-lhn96   <none>
+nginx-deployment-6fb79bc456-lj7hs   <none>
+nginx-deployment-6fb79bc456-n2lhq   <none>
+nginx-deployment-6fb79bc456-ns949   <none>
+nginx-deployment-6fb79bc456-q2ql2   <none>
+nginx-deployment-6fb79bc456-q7lmr   <none>
+nginx-deployment-6fb79bc456-r294p   <none>
+nginx-deployment-6fb79bc456-rqqjk   <none>
+nginx-deployment-6fb79bc456-rz49w   <none>
+nginx-deployment-6fb79bc456-swt6m   <none>
+nginx-deployment-6fb79bc456-wk7ht   <none>
+nginx-deployment-6fb79bc456-wvs9l   <none>
+nginx-deployment-6fb79bc456-x6wdt   <none>
+nginx-deployment-6fb79bc456-xq98c   <none>
+nginx-deployment-6fb79bc456-zjcmm   <none>
+```
+
+기존에 IP가 할당되어 있던 pod 모두가 <none> 으로 표시된다. 다만 해당 문제는
+새로운 터미널을 열고 다시 같은 명령어를 입력해보았을 때는 다시 정상적으로 표기가 된다.
+갑자기 pod를 많이 생성했을 때 발생하는 자그만한 표기 오류인 것 같다.
+
+```
+kubectl get pod -o=custom-columns=NAME:.metadata.name,IP:.status.podIP
+NAME                                IP
+nginx-deployment-6fb79bc456-44t7d   192.168.3.222
+nginx-deployment-6fb79bc456-4pwxv   192.168.1.70
+nginx-deployment-6fb79bc456-5k6m6   192.168.2.12
+nginx-deployment-6fb79bc456-6lc5f   192.168.2.51
+nginx-deployment-6fb79bc456-77n9z   192.168.3.198
+nginx-deployment-6fb79bc456-8xxcb   192.168.2.24
+nginx-deployment-6fb79bc456-b4tl2   192.168.2.120
+nginx-deployment-6fb79bc456-bf25x   192.168.1.149
+nginx-deployment-6fb79bc456-cjrfl   192.168.3.39
+nginx-deployment-6fb79bc456-cpzzt   192.168.2.91
+nginx-deployment-6fb79bc456-cxc2h   192.168.3.107
+nginx-deployment-6fb79bc456-d47jn   192.168.1.186
+nginx-deployment-6fb79bc456-g22x4   192.168.2.33
+nginx-deployment-6fb79bc456-k5r4p   192.168.1.116
+nginx-deployment-6fb79bc456-krtqt   192.168.3.151
+nginx-deployment-6fb79bc456-lhn96   192.168.2.101
+nginx-deployment-6fb79bc456-lj7hs   192.168.1.221
+nginx-deployment-6fb79bc456-n2lhq   192.168.3.241
+nginx-deployment-6fb79bc456-ns949   192.168.2.104
+nginx-deployment-6fb79bc456-q2ql2   192.168.1.40
+nginx-deployment-6fb79bc456-q7lmr   192.168.3.19
+nginx-deployment-6fb79bc456-r294p   192.168.3.226
+nginx-deployment-6fb79bc456-rqqjk   192.168.2.231
+nginx-deployment-6fb79bc456-rz49w   192.168.3.232
+nginx-deployment-6fb79bc456-swt6m   192.168.3.131
+nginx-deployment-6fb79bc456-wk7ht   192.168.2.77
+nginx-deployment-6fb79bc456-wvs9l   192.168.1.147
+nginx-deployment-6fb79bc456-x6wdt   192.168.1.46
+nginx-deployment-6fb79bc456-xq98c   192.168.1.133
+nginx-deployment-6fb79bc456-zjcmm   192.168.1.105
+```
+
+이번에는 pod를 70개 생성해보겠다.
+
+```
+# kubectl scale deployment nginx-deployment --replicas=70
+# kubectl get pod -o=custom-columns=NAME:.metadata.name,IP:.status.podIP
+NAME                                IP
+nginx-deployment-6fb79bc456-2lrnf   192.168.1.155
+nginx-deployment-6fb79bc456-44t7d   192.168.3.222
+nginx-deployment-6fb79bc456-4pwxv   192.168.1.70
+nginx-deployment-6fb79bc456-4xvd9   <none>
+nginx-deployment-6fb79bc456-5k6m6   192.168.2.12
+nginx-deployment-6fb79bc456-5rl7t   <none>
+nginx-deployment-6fb79bc456-64d2k   192.168.2.117
+nginx-deployment-6fb79bc456-6jffc   <none>
+nginx-deployment-6fb79bc456-6k657   <none>
+nginx-deployment-6fb79bc456-6lc5f   192.168.2.51
+nginx-deployment-6fb79bc456-77n9z   192.168.3.198
+nginx-deployment-6fb79bc456-85rrf   <none>
+nginx-deployment-6fb79bc456-86vq2   <none>
+nginx-deployment-6fb79bc456-8xxcb   192.168.2.24
+nginx-deployment-6fb79bc456-9445c   <none>
+nginx-deployment-6fb79bc456-b4tl2   192.168.2.120
+nginx-deployment-6fb79bc456-b8jjh   <none>
+nginx-deployment-6fb79bc456-b9kx9   <none>
+nginx-deployment-6fb79bc456-bf25x   192.168.1.149
+nginx-deployment-6fb79bc456-cjrfl   192.168.3.39
+nginx-deployment-6fb79bc456-cpzzt   192.168.2.91
+nginx-deployment-6fb79bc456-cxc2h   192.168.3.107
+nginx-deployment-6fb79bc456-d47jn   192.168.1.186
+nginx-deployment-6fb79bc456-dz8hs   <none>
+nginx-deployment-6fb79bc456-fk4n5   192.168.1.172
+nginx-deployment-6fb79bc456-g22x4   192.168.2.33
+nginx-deployment-6fb79bc456-g257p   <none>
+nginx-deployment-6fb79bc456-g7mx8   <none>
+nginx-deployment-6fb79bc456-hr9pl   <none>
+nginx-deployment-6fb79bc456-jqtxh   <none>
+nginx-deployment-6fb79bc456-jwxt4   <none>
+nginx-deployment-6fb79bc456-k5r4p   192.168.1.116
+nginx-deployment-6fb79bc456-kdlgs   <none>
+nginx-deployment-6fb79bc456-kgswv   192.168.2.54
+nginx-deployment-6fb79bc456-krtqt   192.168.3.151
+nginx-deployment-6fb79bc456-l2q9k   192.168.1.52
+nginx-deployment-6fb79bc456-l69mg   <none>
+nginx-deployment-6fb79bc456-lhn96   192.168.2.101
+nginx-deployment-6fb79bc456-lj7hs   192.168.1.221
+nginx-deployment-6fb79bc456-mj87r   192.168.3.149
+nginx-deployment-6fb79bc456-mskkz   <none>
+nginx-deployment-6fb79bc456-n2lhq   192.168.3.241
+nginx-deployment-6fb79bc456-n6czb   192.168.2.126
+nginx-deployment-6fb79bc456-nbnts   <none>
+nginx-deployment-6fb79bc456-nhd2p   <none>
+nginx-deployment-6fb79bc456-ns949   192.168.2.104
+nginx-deployment-6fb79bc456-nzlzx   <none>
+nginx-deployment-6fb79bc456-q2ql2   192.168.1.40
+nginx-deployment-6fb79bc456-q5zjx   192.168.3.95
+nginx-deployment-6fb79bc456-q7lmr   192.168.3.19
+nginx-deployment-6fb79bc456-qxzg2   192.168.2.81
+nginx-deployment-6fb79bc456-r294p   192.168.3.226
+nginx-deployment-6fb79bc456-rqqjk   192.168.2.231
+nginx-deployment-6fb79bc456-rt9dz   <none>
+nginx-deployment-6fb79bc456-rz49w   192.168.3.232
+nginx-deployment-6fb79bc456-swt6m   192.168.3.131
+nginx-deployment-6fb79bc456-thvfh   <none>
+nginx-deployment-6fb79bc456-vhdgs   <none>
+nginx-deployment-6fb79bc456-vrdf8   192.168.1.174
+nginx-deployment-6fb79bc456-vz492   192.168.1.67
+nginx-deployment-6fb79bc456-wk7ht   192.168.2.77
+nginx-deployment-6fb79bc456-wvs9l   192.168.1.147
+nginx-deployment-6fb79bc456-x5p98   <none>
+nginx-deployment-6fb79bc456-x6wdt   192.168.1.46
+nginx-deployment-6fb79bc456-xg6x5   <none>
+nginx-deployment-6fb79bc456-xq98c   192.168.1.133
+nginx-deployment-6fb79bc456-z27gq   <none>
+nginx-deployment-6fb79bc456-z6gwk   192.168.3.32
+nginx-deployment-6fb79bc456-zbmp9   192.168.3.21
+nginx-deployment-6fb79bc456-zjcmm   192.168.1.105
+```
+
+최대로 할당할 수 있는 IP를 넘어서게 pod가 생성되면 pod에 ip가 할당되지 않고 생성되는 것을 볼 수 있다.
+
+
+```
+kubectl get pods | grep Pending
+nginx-deployment-6fb79bc456-4xvd9   0/1     Pending   0          93s
+nginx-deployment-6fb79bc456-5rl7t   0/1     Pending   0          93s
+nginx-deployment-6fb79bc456-6jffc   0/1     Pending   0          93s
+nginx-deployment-6fb79bc456-6k657   0/1     Pending   0          93s
+nginx-deployment-6fb79bc456-85rrf   0/1     Pending   0          93s
+nginx-deployment-6fb79bc456-86vq2   0/1     Pending   0          93s
+nginx-deployment-6fb79bc456-9445c   0/1     Pending   0          93s
+nginx-deployment-6fb79bc456-b8jjh   0/1     Pending   0          93s
+nginx-deployment-6fb79bc456-b9kx9   0/1     Pending   0          94s
+nginx-deployment-6fb79bc456-dz8hs   0/1     Pending   0          93s
+nginx-deployment-6fb79bc456-g257p   0/1     Pending   0          93s
+nginx-deployment-6fb79bc456-g7mx8   0/1     Pending   0          94s
+nginx-deployment-6fb79bc456-hr9pl   0/1     Pending   0          93s
+nginx-deployment-6fb79bc456-jqtxh   0/1     Pending   0          93s
+nginx-deployment-6fb79bc456-jwxt4   0/1     Pending   0          93s
+nginx-deployment-6fb79bc456-kdlgs   0/1     Pending   0          93s
+nginx-deployment-6fb79bc456-l69mg   0/1     Pending   0          93s
+nginx-deployment-6fb79bc456-mskkz   0/1     Pending   0          93s
+nginx-deployment-6fb79bc456-nbnts   0/1     Pending   0          93s
+nginx-deployment-6fb79bc456-nhd2p   0/1     Pending   0          94s
+nginx-deployment-6fb79bc456-nzlzx   0/1     Pending   0          93s
+nginx-deployment-6fb79bc456-rt9dz   0/1     Pending   0          93s
+nginx-deployment-6fb79bc456-thvfh   0/1     Pending   0          93s
+nginx-deployment-6fb79bc456-vhdgs   0/1     Pending   0          93s
+nginx-deployment-6fb79bc456-x5p98   0/1     Pending   0          93s
+nginx-deployment-6fb79bc456-xg6x5   0/1     Pending   0          93s
+nginx-deployment-6fb79bc456-z27gq   0/1     
+```
 
 
