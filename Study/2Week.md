@@ -415,7 +415,9 @@ nginx-deployment-6fb79bc456-rz49w   192.168.3.232
 nginx-deployment-6fb79bc456-swt6m   192.168.3.131
 nginx-deployment-6fb79bc456-x6wdt   192.168.1.46
 nginx-deployment-6fb79bc456-xq98c   192.168.1.133
+
 ```
+
 
 최대 갯수인 17개의 pod를 생성하였을 때는 모두 ip가 할당되었다. 그러면 30으로 하면 어떻게 될까?
 
@@ -459,6 +461,7 @@ nginx-deployment-6fb79bc456-zjcmm   <none>
 기존에 IP가 할당되어 있던 pod 모두가 <none> 으로 표시된다. 다만 해당 문제는
 새로운 터미널을 열고 다시 같은 명령어를 입력해보았을 때는 다시 정상적으로 표기가 된다.
 갑자기 pod를 많이 생성했을 때 발생하는 자그만한 표기 오류인 것 같다.
+
 
 ```
 kubectl get pod -o=custom-columns=NAME:.metadata.name,IP:.status.podIP
@@ -607,4 +610,13 @@ nginx-deployment-6fb79bc456-xg6x5   0/1     Pending   0          93s
 nginx-deployment-6fb79bc456-z27gq   0/1     
 ```
 
+### Service & AWS LoadBalancer Controller
+ 
 
+![LB](https://github.com/jiwonYun9332/AWES-1/blob/f496d03123f67e66b8e1365212bb496541cccffb/Study/images/2_13_lb.png)
+ 
+![LB](https://github.com/jiwonYun9332/AWES-1/blob/f496d03123f67e66b8e1365212bb496541cccffb/Study/images/2_14_lb.png)
+ 
+![LB](https://github.com/jiwonYun9332/AWES-1/blob/f496d03123f67e66b8e1365212bb496541cccffb/Study/images/2_15_lb.png)
+ 
+![LB]
