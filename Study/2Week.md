@@ -616,7 +616,108 @@ nginx-deployment-6fb79bc456-z27gq   0/1
 ![LB](https://github.com/jiwonYun9332/AWES-1/blob/f496d03123f67e66b8e1365212bb496541cccffb/Study/images/2_13_lb.png)
  
 ![LB](https://github.com/jiwonYun9332/AWES-1/blob/f496d03123f67e66b8e1365212bb496541cccffb/Study/images/2_14_lb.png)
- 
+
+- externalTrafficPolicy : ClusterIP ⇒ 2번 분산 및 SNAT으로 Client IP 확인 불가능 ← LoadBalancer 타입 (기본 모드) 동작
+- externalTrafficPolicy : Local ⇒ 1번 분산 및 ClientIP 유지, 워커 노드의 iptables 사용함
+
+인스턴스 유형
+
+**통신 흐름**
+
 ![LB](https://github.com/jiwonYun9332/AWES-1/blob/f496d03123f67e66b8e1365212bb496541cccffb/Study/images/2_15_lb.png)
  
-![LB]
+- 노드는 외부에 공개되지 않고 로드밸런서만 외부에 공개되어, 외부 클라이언트는 로드밸랜서에 접속을 할 뿐 내부 노드의 정보를 알 수 없다
+- 로드밸런서가 부하분산하여 파드가 존재하는 노드들에게 전달한다, iptables 룰에서는 자신의 노드에 있는 파드만 연결한다 (externalTrafficPolicy: local)
+- DNAT 2번 동작 : 첫번째(로드밸런서 접속 후 빠져 나갈때), 두번째(노드의 iptables 룰에서 파드IP 전달 시)
+- 외부 클라이언트 IP 보존(유지) : AWS NLB 는 타켓이 인스턴스일 경우 클라이언트 IP를 유지, iptables 룰 경우도 externalTrafficPolicy 로 클라이언트 IP를 보존
+ 
+![LB](https://github.com/jiwonYun9332/AWES-1/blob/6d761d661a23f5e39d09c1e967ade4673cc4f9b4/Study/images/2_16_lb.png)
+ 
+ 
+IP 유형 ⇒ 반드시 AWS LoadBalancer 컨트롤러 파드 및 정책 설정이 필요
+ 
+Proxy Protocol v2 비활성화 -> NLB에서 바로 파드로 인입, 단 ClientIP가 NLB로 SNAT 되어 Client IP 확인 불가능
+Proxy Protocol v2 활성화 -> NLB에서 바로 파드로 인입 및 ClientIP 확인 가능(→ 단 PPv2 를 애플리케이션이 인지할 수 있게 설정 필요)
+ 
+> 실습
+ 
+ ```
+ # OIDC 확인
+aws eks describe-cluster --name $CLUSTER_NAME --query "cluster.identity.oidc.issuer" --output text
+aws iam list-open-id-connect-providers | jq
+
+# IAM Policy (AWSLoadBalancerControllerIAMPolicy) 생성
+curl -o iam_policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.4.7/docs/install/iam_policy.json
+aws iam create-policy --policy-name AWSLoadBalancerControllerIAMPolicy --policy-document file://iam_policy.json
+
+# 혹시 이미 IAM 정책이 있지만 예전 정책일 경우 아래 처럼 최신 업데이트 할 것
+# aws iam update-policy ~~~
+
+# 생성된 IAM Policy Arn 확인
+aws iam list-policies --scope Local
+aws iam get-policy --policy-arn arn:aws:iam::$ACCOUNT_ID:policy/AWSLoadBalancerControllerIAMPolicy
+aws iam get-policy --policy-arn arn:aws:iam::$ACCOUNT_ID:policy/AWSLoadBalancerControllerIAMPolicy --query 'Policy.Arn'
+
+# AWS Load Balancer Controller를 위한 ServiceAccount를 생성 >> 자동으로 매칭되는 IAM Role 을 CloudFormation 으로 생성됨!
+# IAM 역할 생성. AWS Load Balancer Controller의 kube-system 네임스페이스에 aws-load-balancer-controller라는 Kubernetes 서비스 계정을 생성하고 IAM 역할의 이름으로 Kubernetes 서비스 계정에 주석을 답니다
+eksctl create iamserviceaccount --cluster=$CLUSTER_NAME --namespace=kube-system --name=aws-load-balancer-controller \
+--attach-policy-arn=arn:aws:iam::$ACCOUNT_ID:policy/AWSLoadBalancerControllerIAMPolicy --override-existing-serviceaccounts --approve
+
+## IRSA 정보 확인
+eksctl get iamserviceaccount --cluster $CLUSTER_NAME
+
+## 서비스 어카운트 확인
+kubectl get serviceaccounts -n kube-system aws-load-balancer-controller -o yaml | yh
+
+# Helm Chart 설치
+helm repo add eks https://aws.github.io/eks-charts
+helm repo update
+helm install aws-load-balancer-controller eks/aws-load-balancer-controller -n kube-system --set clusterName=$CLUSTER_NAME \
+  --set serviceAccount.create=false --set serviceAccount.name=aws-load-balancer-controller
+
+## 설치 확인
+kubectl get crd
+kubectl get deployment -n kube-system aws-load-balancer-controller
+kubectl describe deploy -n kube-system aws-load-balancer-controller
+kubectl describe deploy -n kube-system aws-load-balancer-controller | grep 'Service Account'
+  Service Account:  aws-load-balancer-controller
+```
+ 
+**클러스터롤, 롤 확인**
+
+![clusterCheck](https://github.com/jiwonYun9332/AWES-1/blob/40e8cae0d82aeed02f1aef1efe6ec7c0992d49ec/Study/images/2_17_clstuerCheck.png)
+ 
+
+**생성된 IAM Role 신뢰 관계 확인**
+
+![roleCheck](https://github.com/jiwonYun9332/AWES-1/blob/40e8cae0d82aeed02f1aef1efe6ec7c0992d49ec/Study/images/2_18_roleCheck.png)
+ 
+***작업용 EC2 - 디플로이먼트 & 서비스 생성***
+
+ ```
+curl -s -O https://raw.githubusercontent.com/gasida/PKOS/main/2/echo-service-nlb.yaml
+cat echo-service-nlb.yaml | yh
+kubectl apply -f echo-service-nlb.yaml
+```
+
+**AWS ELB(NLB) 정보 확인**
+ 
+![elbCheck](https://github.com/jiwonYun9332/AWES-1/blob/d15a289bcd470c12af2475298601380042a778f1/Study/images/2_19_elbCheck.png)
+
+**웹 접속 주소 확인**
+ 
+```
+# kubectl get svc svc-nlb-ip-type -o jsonpath={.status.loadBalancer.ingress[0].hostname} | awk '{ print "Pod Web URL = http://"$1 }'
+Pod Web URL = http://k8s-default-svcnlbip-a8f1be3313-6bf005ccda39eac4.elb.ap-northeast-2.amazonaws.com
+```
+
+**분산 접속 확인**
+
+![elbcheck](https://github.com/jiwonYun9332/AWES-1/blob/d15a289bcd470c12af2475298601380042a778f1/Study/images/2_20_elbCheck.png)
+
+ 
+ 
+ 
+ 
+ 
+ 
