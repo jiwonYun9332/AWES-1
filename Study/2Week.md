@@ -261,6 +261,37 @@ default via 192.168.3.1 dev eth0
 
 위 결과에서도 확인할 수 있듯, eth0을 통해 네트워크 통신을 하고 있음을 알 수 있다.
 
+### 파드 간 네트워크 통신, calico vs ENI
+
+calico 와 aws cni 의 파드 간의 통신 간 차이점에 대해 알아본다.
+
+![calico](https://github.com/jiwonYun9332/AWES-1/blob/89719821dd0bdefb18cae84c5e1960408e2a565f/Study/images/2_10_calico.png)
+
+칼리코는 외부와의 통신 시 iptables 을 통해 NAT 되어 파드 IP가 아닌 노드 IP의 eth0 인터페이스 IP로 변환되어 통신하게 된다.
+
+```
+root@ubun20-81:~# calicoctl get ippool -o wide
+NAME           CIDR             NAT    IPIPMODE   VXLANMODE   DISABLED   DISABLEBGPEXPORT   SELECTOR
+default-pool   10.233.64.0/18   true   Always     Never       false      false              all()
+```
+
+```
+# iptables -n -t nat --list cali-nat-outgoing
+Chain cali-nat-outgoing (1 references)
+target     prot opt source               destination
+MASQUERADE  all  --  0.0.0.0/0            0.0.0.0/0            /* cali:flqWnvo8yq4ULQLa */ match-set cali40masq-ipam-pools src ! match-set cali40all-ipam-pools dst random-fully
+```
+
+위 정책을 확인하면 알 수 있듯이 모든 0.0.0.0 도착지에 대해 (cali-nat-outgoing) MASQUERADE 설정이 되어 있다.
+
+반면에 AWS ENI을 이용한 파드 간의 통신의 경우
+
+![podNetworking](https://github.com/jiwonYun9332/AWES-1/blob/bdbc8c1e93a45ad243be199ecbe16628e88db1c3/Study/images/2_9_podNetwork.png)
+
+Overlay 기술 없이 파드 간의 통신이 가능하다.
+
+
+
 
 
 
