@@ -794,6 +794,11 @@ ssh ec2-user@$N4 sudo ps -ef | grep kubelet
 
 ![images](https://github.com/jiwonYun9332/AWES-1/blob/a5b8085e901b10d8f44ca0c6f81182008f5830f7/Study/images/45_images.png)
 
+
+**이쯤에서 다시 한 번 kubeopsview 확인!!**
+
+![kubeopsview](https://github.com/jiwonYun9332/AWES-1/blob/c50cc75cab5ad9d668e76e1be7578c99dde8353c/Study/images/46_kubeopsview.png)
+
 **삭제**
 
 ```
