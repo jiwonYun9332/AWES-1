@@ -822,6 +822,9 @@ aws cloudformation delete-stack --stack-name eksctl-$CLUSTER_NAME-addon-iamservi
 eksctl delete cluster --name $CLUSTER_NAME && aws cloudformation delete-stack --stack-name $CLUSTER_NAME
 ```
 
+### EKS 3회차 스터디 진행 후 개선사항
+
+이제부터는 실습을 따라서만 하지 않고 도전과제를 진행해야 할 것 같다.
 
 
 
