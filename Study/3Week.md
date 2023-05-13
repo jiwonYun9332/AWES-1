@@ -630,6 +630,196 @@ kubectl exec app -- cat /data/out.txt
 kubectl delete pod app && kubectl delete pvc ebs-snapshot-restored-claim && kubectl delete volumesnapshots ebs-volume-snapshot
 ```
 
+### AWS EFS Controller 
+
+**구성 아키텍처**
+
+![architecture](https://github.com/jiwonYun9332/AWES-1/blob/485da568e3de3abb4ab85e103bde205ea46f59f4/Study/images/40_architecture.png)
+
+![architecture](https://github.com/jiwonYun9332/AWES-1/blob/485da568e3de3abb4ab85e103bde205ea46f59f4/Study/images/41_architecture.png)
+
+
+```
+# EFS 정보 확인 
+aws efs describe-file-systems --query "FileSystems[*].FileSystemId" --output text
+
+# IAM 정책 생성
+curl -s -O https://raw.githubusercontent.com/kubernetes-sigs/aws-efs-csi-driver/master/docs/**iam-policy-example.json**
+aws iam create-policy --policy-name **AmazonEKS_EFS_CSI_Driver_Policy** --policy-document file://iam-policy-example.json
+
+# ISRA 설정 : 고객관리형 정책 AmazonEKS_EFS_CSI_Driver_Policy 사용
+eksctl create **iamserviceaccount** \
+  --name **efs-csi-controller-sa** \
+  --namespace kube-system \
+  --cluster ${CLUSTER_NAME} \
+  --attach-policy-arn arn:aws:iam::${ACCOUNT_ID}:policy/AmazonEKS_EFS_CSI_Driver_Policy \
+  --approve
+
+****# ISRA 확인
+kubectl get sa -n kube-system efs-csi-controller-sa -o yaml | head -5
+****eksctl get iamserviceaccount --cluster myeks
+
+# EFS Controller 설치
+helm repo add aws-efs-csi-driver https://kubernetes-sigs.github.io/aws-efs-csi-driver/
+helm repo update
+helm upgrade -i aws-efs-csi-driver aws-efs-csi-driver/aws-efs-csi-driver \
+    --namespace kube-system \
+    --set image.repository=602401143452.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/eks/aws-efs-csi-driver \
+    --set controller.serviceAccount.create=false \
+    --set controller.serviceAccount.name=efs-csi-controller-sa
+
+# 확인
+helm list -n kube-system
+kubectl get pod -n kube-system -l "app.kubernetes.io/name=aws-efs-csi-driver,app.kubernetes.io/instance=aws-efs-csi-driver"
+
+```
+
+![check](https://github.com/jiwonYun9332/AWES-1/blob/6fffc7c0d02f0631c088db8b4561f0b1d66a634c/Study/images/42_check.png)
+
+
+**EFS 파일시스템을 다수의 파드가 사용하게 설정**
+
+```
+# 모니터링
+watch 'kubectl get sc efs-sc; echo; kubectl get pv,pvc,pod'
+
+# 실습 코드 clone
+git clone https://github.com/kubernetes-sigs/aws-efs-csi-driver.git /root/efs-csi
+cd /root/efs-csi/examples/kubernetes/multiple_pods/specs && tree
+
+# EFS 스토리지클래스 생성 및 확인
+cat storageclass.yaml | yh
+kubectl apply -f storageclass.yaml
+kubectl get sc efs-sc
+
+# PV 생성 및 확인 : volumeHandle을 자신의 EFS 파일시스템ID로 변경
+EfsFsId=$(aws efs describe-file-systems --query "FileSystems[*].FileSystemId" --output text)
+sed -i "s/fs-4af69aab/$EfsFsId/g" pv.yaml
+
+cat pv.yaml | yh
+kubectl apply -f pv.yaml
+kubectl get pv; kubectl describe pv
+
+# PVC 생성 및 확인
+cat claim.yaml | yh
+kubectl apply -f claim.yaml
+kubectl get pvc
+
+# 파드 생성 및 연동 : 파드 내에 /data 데이터는 EFS를 사용
+cat pod1.yaml pod2.yaml | yh
+kubectl apply -f pod1.yaml,pod2.yaml
+kubectl df - pv
+
+# 파드 정보 확인 : PV에 5Gi 와 파드 내에서 확인한 NFS4 볼륨 크리 8.0E의 차이는 무엇? 파드에 6Gi 이상 저장 가능한가?
+kubectl get pods
+kubectl exec -ti app1 -- sh -c "df -hT -t nfs4"
+kubectl exec -ti app2 -- sh -c "df -hT -t nfs4"
+Filesystem           Type            Size      Used Available Use% Mounted on
+127.0.0.1:/          nfs4            8.0E         0      8.0E   0% /data
+
+# 공유 저장소 저장 동작 확인
+tree /mnt/myefs              # 작업용EC2에서 확인
+tail -f /mnt/myefs/out1.txt  # 작업용EC2에서 확인
+kubectl exec -ti app1 -- tail -f /data/out1.txt
+kubectl exec -ti app2 -- tail -f /data/out2.txt
+```
+
+![check](https://github.com/jiwonYun9332/AWES-1/blob/d020531c8948412bb8c7e970b3d9f2dbaaf70cbc/Study/images/43_check.png)
+
+**쿠버네티스 리소스 삭제**
+
+```
+kubectl delete pod app1 app2 
+kubectl delete pvc efs-claim && kubectl delete pv efs-pv && kubectl delete sc efs-sc
+```
+
+### EKS Persistent Volumes for Instance Store & Add NodeGroup
+
+```
+aws ec2 describe-instance-types \
+ --filters "Name=instance-type,Values=c5*" "Name=instance-storage-supported,Values=true" \
+ --query "InstanceTypes[].[InstanceType, InstanceStorageInfo.TotalSizeInGB]" \
+ --output table
+```
+
+![images](https://github.com/jiwonYun9332/AWES-1/blob/995999a40af64c064a1a3f0ccee76463ad6ea7d4/Study/images/44_images.png)
+
+```
+# 신규 노드 그룹 생성
+eksctl create nodegroup -c $CLUSTER_NAME -r $AWS_DEFAULT_REGION --subnet-ids "$PubSubnet1","$PubSubnet2","$PubSubnet3" --ssh-access \
+  -n ng2 -t c5d.large -N 1 -m 1 -M 1 --node-volume-size=30 --node-labels disk=nvme --max-pods-per-node 100 --dry-run > myng2.yaml
+  
+cat <<EOT > nvme.yaml
+  preBootstrapCommands:
+    - |
+      # Install Tools
+      yum install nvme-cli links tree jq tcpdump sysstat -y
+
+      # Filesystem & Mount
+      mkfs -t xfs /dev/nvme1n1
+      mkdir /data
+      mount /dev/nvme1n1 /data
+
+      # Get disk UUID
+      uuid=\$(blkid -o value -s UUID mount /dev/nvme1n1 /data) 
+
+      # Mount the disk during a reboot
+      echo /dev/nvme1n1 /data xfs defaults,noatime 0 2 >> /etc/fstab
+EOT
+
+sed -i -n -e '/volumeType/r nvme.yaml' -e '1,$p' myng2.yaml
+eksctl create nodegroup -f myng2.yaml
+
+# 노드 보안그룹 ID 확인
+NG2SGID=$(aws ec2 describe-security-groups --filters Name=group-name,Values=*ng2* --query "SecurityGroups[*].[GroupId]" --output text)
+aws ec2 authorize-security-group-ingress --group-id $NG2SGID --protocol '-1' --cidr 192.168.1.100/32
+
+# 워커 노드 SSH 접속
+N4=192.168.1.100
+ssh ec2-user@$N4 hostname
+
+# 확인
+ssh ec2-user@$N4 sudo nvme list
+ssh ec2-user@$N4 sudo lsblk -e 7 -d
+ssh ec2-user@$N4 sudo df -hT -t xfs
+ssh ec2-user@$N4 sudo tree /data
+ssh ec2-user@$N4 sudo cat /etc/fstab
+
+# (옵션) max-pod 확인
+kubectl describe node -l disk=nvme | grep Allocatable: -A7
+
+# (옵션) kubelet 데몬 파라미터 확인 : --max-pods=29 --max-pods=100
+ssh ec2-user@$N4 sudo ps -ef | grep kubelet
+```
+
+![images](https://github.com/jiwonYun9332/AWES-1/blob/a5b8085e901b10d8f44ca0c6f81182008f5830f7/Study/images/45_images.png)
+
+**삭제**
+
+```
+# 
+kubectl delete -f local-path-storage.yaml
+
+# 노드그룹 삭제
+eksctl delete nodegroup -c $CLUSTER_NAME -n ng2
+```
+
+**실습 완료 후 삭제**
+
+```
+# IRSA 스택 삭제
+helm uninstall -n kube-system kube-ops-view
+aws cloudformation delete-stack --stack-name eksctl-$CLUSTER_NAME-addon-iamserviceaccount-kube-system-efs-csi-controller-sa
+aws cloudformation delete-stack --stack-name eksctl-$CLUSTER_NAME-addon-iamserviceaccount-kube-system-ebs-csi-controller-sa
+aws cloudformation delete-stack --stack-name eksctl-$CLUSTER_NAME-addon-iamserviceaccount-kube-system-aws-load-balancer-controller
+
+# 삭제
+eksctl delete cluster --name $CLUSTER_NAME && aws cloudformation delete-stack --stack-name $CLUSTER_NAME
+```
+
+
+
+
 
 
 
