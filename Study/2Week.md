@@ -1,7 +1,6 @@
 # 2Week
 
-![eks logo](https://github.com/jiwonYun9332/AWES-1/blob/988ee97c30ec07bc1a3360fef09b0c944f5f0530/Study/images/1_logo.png)
-
+![eks logo](https://github.com/jiwonYun9332/AWES-1/blob/bdd002841f12886b4dc4b185298d2929f41fa633/Study/images/22_logo.jpg)
 
 ## 2주차 Study(Networking)
 
