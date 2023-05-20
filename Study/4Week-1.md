@@ -739,6 +739,46 @@ kubectl delete pod netshoot-pod
 ![image](https://github.com/jiwonYun9332/AWES-1/blob/5869da8f979ce602b0dfc1da88569e7ec527a36b/Study/images/68_images.jpg)
 
 
+**슬랙 알림 연동**
+
+[슬랙API](https://api.slack.com/)
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/429b6c2c0d7f6cc13c376138167dbe49d196e5c0/Study/images/70_images.jpg)
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/429b6c2c0d7f6cc13c376138167dbe49d196e5c0/Study/images/69_images.jpg)
+
+
+우선은 슬랙 연동하여, 차트 그림까지 나오게 할 수 있도록 설정해보려 했으나, 아직 지식이 부족하여, 잘 안되었다.
+
+```
+kubectl exec -it -n monitoring deploy/kube-prometheus-stack-grafana -- grafana-cli plugins install grafana-image-renderer
+```
+
+```
+kubectl get pods --namespace=monitoring
+NAME                                                        READY   STATUS    RESTARTS   AGE
+kube-prometheus-stack-grafana-75f7bfd866-vhw8v              3/3     Running   0          12m
+kube-prometheus-stack-kube-state-metrics-749d5dc4cb-ld7r5   1/1     Running   0          12m
+kube-prometheus-stack-operator-7d46f7fb99-7th7n             1/1     Running   0          12m
+kube-prometheus-stack-prometheus-node-exporter-4ltfw        1/1     Running   0          99m
+kube-prometheus-stack-prometheus-node-exporter-n2g7d        1/1     Running   0          99m
+kube-prometheus-stack-prometheus-node-exporter-pz7b8        1/1     Running   0          99m
+prometheus-kube-prometheus-stack-prometheus-0               2/2     Running   0          99m
+```
+
+```
+kubectl exec -it -n monitoring deploy/kube-prometheus-stack-grafana -- /usr/share/grafana/bin/grafana server
+boards with \"sidecarProvider\" reader: failed to check whether org. with the given ID exists: context canceled"
+Error: ✗ *rendering.RenderingService run error: Unrecognized remote plugin message:
+
+This usually means that the plugin is either invalid or simply
+needs to be recompiled to support the latest protocol.
+```
+
+그라파나 기존 버전의 차트, 9.x 버전의 차트 슬랙 메시지 전송 방식의 대한 변화의 이해, yaml 수정을 통한 pod의 rendering 적용방법, 
+그라파나와 호환되는 rendering plugin version 등의 정보를 습득하고, 계속해서 슬랙 차트 아미지 전송을 테스트 해봐야겠다.
+
+
 
 
 
