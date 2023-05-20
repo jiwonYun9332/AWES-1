@@ -1,6 +1,6 @@
-# 4Week-1
+# 4Week - 4주차 실습
 
-## 4주차 실습
+![image](https://github.com/jiwonYun9332/AWES-1/blob/2af5d144719a16b691ac735f93bb9fc7d46a4a86/Study/images/47_images.jpg)
 
 ### 실습 환경 배포 확인
 
