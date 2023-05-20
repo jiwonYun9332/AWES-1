@@ -415,6 +415,295 @@ metadata:
 curl -s https://raw.githubusercontent.com/aws-samples/amazon-cloudwatch-container-insights/latest/k8s-deployment-manifest-templates/deployment-mode/daemonset/container-insights-monitoring/quickstart/cwagent-fluent-bit-quickstart.yaml | sed 's/{{cluster_name}}/'${CLUSTER_NAME}'/;s/{{region_name}}/'${AWS_DEFAULT_REGION}'/;s/{{http_server_toggle}}/"'${FluentBitHttpServer}'"/;s/{{http_server_port}}/"'${FluentBitHttpPort}'"/;s/{{read_from_head}}/"'${FluentBitReadFromHead}'"/;s/{{read_from_tail}}/"'${FluentBitReadFromTail}'"/' | kubectl delete -f -
 ```
 
+### Metrics-server & kwatch & botkube
+
+Metrics-server 확인 : kubelet으로부터 수집한 리소스 메트릭을 수집 및 집계하는 클러스터 애드온 구성 요소
+
+- cAdvisor : kubelet에 포함된 컨테이너 메트릭을 수집, 집계, 노출하는 데몬
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/66151b83acd0280a6a8cef8838cec92ed3d240b4/Study/images/59_images.jpg)
+
+```
+# 배포
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+
+# 메트릭 서버 확인 : 메트릭은 15초 간격으로 cAdvisor를 통하여 가져옴
+kubectl get pod -n kube-system -l k8s-app=metrics-server
+kubectl api-resources | grep metrics
+kubectl get apiservices |egrep '(AVAILABLE|metrics)'
+
+# 노드 메트릭 확인
+kubectl top node
+
+# 파드 메트릭 확인
+kubectl top pod -A
+kubectl top pod -n kube-system --sort-by='cpu'
+kubectl top pod -n kube-system --sort-by='memory'
+```
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/1c1d45910278d4ac007bc75b8d2131a0379c378c/Study/images/60_images.jpg)
+
+**kwatch 설치/사용**
+
+```
+# configmap 생성
+cat <<EOT > ~/kwatch-config.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kwatch
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kwatch
+  namespace: kwatch
+data:
+  config.yaml: |
+    alert:
+      slack:
+        webhook: '웹 훅 URL'
+        title: $NICK-EKS
+        #text:
+    pvcMonitor:
+      enabled: true
+      interval: 5
+      threshold: 70
+EOT
+kubectl apply -f kwatch-config.yaml
+
+# 배포
+kubectl apply -f https://raw.githubusercontent.com/abahmed/kwatch/v0.8.3/deploy/deploy.yaml
+```
+
+```
+# 터미널1
+watch kubectl get pod
+
+# 잘못된 이미지 정보의 파드 배포
+kubectl apply -f https://raw.githubusercontent.com/junghoon2/kube-books/main/ch05/nginx-error-pod.yml
+kubectl get events -w
+```
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/7fb1051843d4946c8b887132dee089724f2a7e7d/Study/images/61_images.jpg)
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/7fb1051843d4946c8b887132dee089724f2a7e7d/Study/images/62_images.jpg)
+
+```
+# 이미지 업데이트 방안2 : set 사용 - iamge 등 일부 리소스 값을 변경 가능!
+kubectl set 
+kubectl set image pod nginx-19 nginx-pod=nginx:1.19
+
+# 삭제
+kubectl delete pod nginx-19
+
+# kwatch 삭제
+kubectl delete -f https://raw.githubusercontent.com/abahmed/kwatch/v0.8.3/deploy/deploy.yaml
+```
+
+### Prometheus
+
+: 목표대상의 상태값을 수집하고 관리하는 시스템, 상태값은 자원사용률(cpu, memory 등) 또는 애플리케이션 수치(API호출 횟수 등)를 의미한다.
+
+쿠버네티스에서 프로메테우스를 사용한다면, 프로메테우스 오퍼레이터를 사용하는 것이 관리가 편하다.
+
+**프로메테우스 오퍼레이터**
+
+: 프로메테우스를 쿠버네티스 오퍼레이터패턴으로 관리한다, 프로메테우스 설치부터 설정관리까지 쿠버네티스 CRD로 관리한다.
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/20c7b0a1b63fcca5bc03432d9a9ba6f4c95a7651/Study/images/63_images.jpg)
+
+- Prometheus Server
+  : 메트릭 수집, 저장, 처리 및 쿼리 기능을 수행한다. 메트릭 수집 방식으로 Pull 방식을 기본적으로 사용한다. 해당 서버가 대상 서비스로부터 메트릭을 주기적으로 수집하고, 시계열 데이터베이스(TSDB, HDD/SDD)에 저장한다.
+- Pushgateway : Pushgateway
+  : Push 방식을 사용하는 일부 유형의 메트릭을 Prometheus에서 수집하기 위한 중간 서버
+- Alertmanager
+  : Prometheus 서버에서 발생한 경고를 관리하고, 사용자에게 알림을 전달하는 컴포넌트
+- Prometheus UI
+  : 내장된 웹 인터페이스로, 사용자가 Prometheus 서버에서 메트릭을 쿼리하고, 시각화된 그래프를 확인할 수 있다.
+
+**확장성, 고가용성 문제**
+
+프로메테우스는 단일 노드 시스템으로 설계되어 있어 클러스터링 구조를 직접 지원하지 않는다. 이로인해 확장성과 고가용성에 일부 보완이 필요하다.
+
+- 확장성 문제
+  - 단일 노드에서 모든 메트릭을 처리하려 할 때 노드의 자원이 고갈되어 성능 저하를 초래할 수 있다.
+  - 대규모 인프라에서 많은 수의 메트릭을 수집하고 처리하는 데 있어 성능 저하와 저장소 부족 문제가 발생할 수 있다. 외부 스토리지 연결이 필요하다.
+
+- 고가용성 문제
+  - 단일 노드에서 발생하는 장애나 다운타임이 생겨 프로메테우스 서버가 내려가면 그 시간 동안에는 메트릭을 수집할 수 없다.
+  - 볼륨이 AWS EBS 를 사용해도 단일 노드에서만 연결이 가능하다. 연결 노드에 다운 타임이 발생하면 메트릭을 가져올 수 없다.
+
+해결방안으로 Thanos를 사용한다.
+
+```
+
+**프로메테우스-스택 설치**
+
+# 모니터링
+kubectl create ns monitoring
+watch kubectl get pod,pvc,svc,ingress -n monitoring
+
+# 사용 리전의 인증서 ARN 확인
+CERT_ARN=`aws acm list-certificates --query 'CertificateSummaryList[].CertificateArn[]' --output text`
+echo $CERT_ARN
+
+# repo 추가
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+
+# 파라미터 파일 생성
+cat <<EOT > monitor-values.yaml
+prometheus:
+  prometheusSpec:
+    podMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+    retention: 5d
+    retentionSize: "10GiB"
+
+  ingress:
+    enabled: true
+    ingressClassName: alb
+    hosts: 
+      - prometheus.$MyDomain
+    paths: 
+      - /*
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}, {"HTTP":80}]'
+      alb.ingress.kubernetes.io/certificate-arn: $CERT_ARN
+      alb.ingress.kubernetes.io/success-codes: 200-399
+      alb.ingress.kubernetes.io/load-balancer-name: myeks-ingress-alb
+      alb.ingress.kubernetes.io/group.name: study
+      alb.ingress.kubernetes.io/ssl-redirect: '443'
+
+grafana:
+  defaultDashboardsTimezone: Asia/Seoul
+  adminPassword: prom-operator
+
+  ingress:
+    enabled: true
+    ingressClassName: alb
+    hosts: 
+      - grafana.$MyDomain
+    paths: 
+      - /*
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}, {"HTTP":80}]'
+      alb.ingress.kubernetes.io/certificate-arn: $CERT_ARN
+      alb.ingress.kubernetes.io/success-codes: 200-399
+      alb.ingress.kubernetes.io/load-balancer-name: myeks-ingress-alb
+      alb.ingress.kubernetes.io/group.name: study
+      alb.ingress.kubernetes.io/ssl-redirect: '443'
+
+defaultRules:
+  create: false
+kubeControllerManager:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeScheduler:
+  enabled: false
+alertmanager:
+  enabled: false
+
+# alertmanager:
+#   ingress:
+#     enabled: true
+#     ingressClassName: alb
+#     hosts: 
+#       - alertmanager.$MyDomain
+#     paths: 
+#       - /*
+#     annotations:
+#       alb.ingress.kubernetes.io/scheme: internet-facing
+#       alb.ingress.kubernetes.io/target-type: ip
+#       alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}, {"HTTP":80}]'
+#       alb.ingress.kubernetes.io/certificate-arn: $CERT_ARN
+#       alb.ingress.kubernetes.io/success-codes: 200-399
+#       alb.ingress.kubernetes.io/load-balancer-name: myeks-ingress-alb
+#       alb.ingress.kubernetes.io/group.name: study
+#       alb.ingress.kubernetes.io/ssl-redirect: '443'
+EOT
+cat monitor-values.yaml | yh
+
+# 배포
+helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack --version 45.27.2 \
+--set prometheus.prometheusSpec.scrapeInterval='15s' --set prometheus.prometheusSpec.evaluationInterval='15s' \
+-f monitor-values.yaml --namespace monitoring
+
+# 확인
+## alertmanager-0 : 사전에 정의한 정책 기반(예: 노드 다운, 파드 Pending 등)으로 시스템 경고 메시지를 생성 후 경보 채널(슬랙 등)로 전송
+## grafana : 프로메테우스는 메트릭 정보를 저장하는 용도로 사용하며, 그라파나로 시각화 처리
+## prometheus-0 : 모니터링 대상이 되는 파드는 ‘exporter’라는 별도의 사이드카 형식의 파드에서 모니터링 메트릭을 노출, pull 방식으로 가져와 내부의 시계열 데이터베이스에 저장
+## node-exporter : 노드익스포터는 물리 노드에 대한 자원 사용량(네트워크, 스토리지 등 전체) 정보를 메트릭 형태로 변경하여 노출
+## operator : 시스템 경고 메시지 정책(prometheus rule), 애플리케이션 모니터링 대상 추가 등의 작업을 편리하게 할수 있게 CRD 지원
+## kube-state-metrics : 쿠버네티스의 클러스터의 상태(kube-state)를 메트릭으로 변환하는 파드
+helm list -n monitoring
+kubectl get pod,svc,ingress -n monitoring
+kubectl get-all -n monitoring
+kubectl get prometheus,servicemonitors -n monitoring
+kubectl get crd | grep monitoring
+```
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/b12caebc38088ac449b2293d622a11f1809cfe1e/Study/images/64_images.jpg)
+
+**웹 페이지 접속**
+
+```
+echo -e "Prometheus Web URL = https://prometheus.$MyDomain"
+```
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/27ece8151238f0e533fc02e188877f05b6110015/Study/images/65_images.jpg)
+
+**삭제**
+
+```
+# helm 삭제
+helm uninstall -n monitoring kube-prometheus-stack
+
+# crd 삭제
+kubectl delete crd alertmanagerconfigs.monitoring.coreos.com
+kubectl delete crd alertmanagers.monitoring.coreos.com
+kubectl delete crd podmonitors.monitoring.coreos.com
+kubectl delete crd probes.monitoring.coreos.com
+kubectl delete crd prometheuses.monitoring.coreos.com
+kubectl delete crd prometheusrules.monitoring.coreos.com
+kubectl delete crd servicemonitors.monitoring.coreos.com
+kubectl delete crd thanosrulers.monitoring.coreos.com
+```
+
+### 그라파나
+
+TSDB 데이터를 시각화
+
+```
+- **[Grafana open source software](https://grafana.com/oss/)** enables you to query, visualize, alert on, and explore your metrics, logs, and traces wherever they are stored.
+    - Grafana OSS provides you with tools to turn your time-series database (TSDB) data into insightful graphs and visualizations.
+```
+
+```
+# 그라파나 버전 확인
+kubectl exec -it -n monitoring deploy/kube-prometheus-stack-grafana -- grafana-cli --version
+grafana cli version 9.5.1
+
+# ingress 확인
+kubectl get ingress -n monitoring kube-prometheus-stack-grafana
+kubectl describe ingress -n monitoring kube-prometheus-stack-grafana
+
+# ingress 도메인으로 웹 접속 : 기본 계정 - admin / prom-operator
+echo -e "Grafana Web URL = https://grafana.$MyDomain"
+```
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/660dac94fcc0b0899f408fe36d1d9908f45573bc/Study/images/66_images.jpg)
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/660dac94fcc0b0899f408fe36d1d9908f45573bc/Study/images/67_images.jpg)
+
+
+
+
 
 
 
