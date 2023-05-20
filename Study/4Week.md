@@ -1,6 +1,6 @@
 # 4Week
 
-![logo](Study/images/47_images.jpg)
+![logo](https://github.com/jiwonYun9332/AWES-1/blob/59e11cc0f979f778a114a7cce1378ddf5f6923ab/Study/images/47_images.jpg)
 
 [4주차 실습 링크](Study/4Week-1.md)
 
