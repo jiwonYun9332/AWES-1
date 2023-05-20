@@ -701,7 +701,42 @@ echo -e "Grafana Web URL = https://grafana.$MyDomain"
 
 ![image](https://github.com/jiwonYun9332/AWES-1/blob/660dac94fcc0b0899f408fe36d1d9908f45573bc/Study/images/67_images.jpg)
 
+```
+# 서비스 주소 확인
+kubectl get svc,ep -n monitoring kube-prometheus-stack-prometheus
+NAME                                       TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE
+service/kube-prometheus-stack-prometheus   ClusterIP   10.100.253.162   <none>        9090/TCP   7m3s
 
+NAME                                         ENDPOINTS            AGE
+endpoints/kube-prometheus-stack-prometheus   192.168.2.123:9090   7m3s
+```
+
+```
+# 테스트용 파드 배포
+cat <<EOF | kubectl create -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: netshoot-pod
+spec:
+  containers:
+  - name: netshoot-pod
+    image: nicolaka/netshoot
+    command: ["tail"]
+    args: ["-f", "/dev/null"]
+  terminationGracePeriodSeconds: 0
+EOF
+kubectl get pod netshoot-pod
+
+# 접속 확인
+kubectl exec -it netshoot-pod -- nslookup kube-prometheus-stack-prometheus.monitoring
+kubectl exec -it netshoot-pod -- curl -s kube-prometheus-stack-prometheus.monitoring:9090/graph -v ; echo
+
+# 삭제
+kubectl delete pod netshoot-pod
+```
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/5869da8f979ce602b0dfc1da88569e7ec527a36b/Study/images/68_images.jpg)
 
 
 
