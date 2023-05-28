@@ -794,6 +794,500 @@ helm uninstall -n monitoring kube-prometheus-stack
 eksctl delete cluster --name $CLUSTER_NAME && aws cloudformation delete-stack --stack-name $CLUSTER_NAME
 ```
 
+### Karpenter
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/60e0c6773ce6235be763ae8bd13a97b27dd1bf15/Study/images/92_image.jpg)
+
+카펜터란?
+
+오픈소스 고성능 Kubernetes 클러스터 오토스케일러이다.
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/60e0c6773ce6235be763ae8bd13a97b27dd1bf15/Study/images/87_image.jpg)
+
+블랙프라이데이와 같은 특정 기점에 트래픽이 기하급수적으로 상승할 때 빠르게 서버가 증설되어야 한다.
+
+스케일 인/아웃 모두 빠르면서 서비스에 적합한 인스턴스를 비용 효율적으로 운영해야 한다. 이때 사용하는 오토 스케일러를 카펜터로 사용하면 몇 초만에 컴퓨팅 리소스를 제공한다.
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/60e0c6773ce6235be763ae8bd13a97b27dd1bf15/Study/images/88_image.jpg)
+
+**기존에 Cluster AutoScaler 문제점**
+
+: 하나의 자원에 대해 두 군데에서 각자의 방식으로 관리, 관리 정보가 서로 동기화 되지 않아 다양한 문제가 발생한다.
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/60e0c6773ce6235be763ae8bd13a97b27dd1bf15/Study/images/89_image.jpg)
+
+Node를 삭제 후 aws의 인스턴스는 삭제되지 않거나
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/60e0c6773ce6235be763ae8bd13a97b27dd1bf15/Study/images/90_image.jpg)
+
+삭제하고 싶은 노드가 삭제되지 않고, AWS의 우선순위가 제일 높은 노드가 삭제된다.
+
+위 방법을 해결하기 위해서는 삭제 대상의 노드를 drain 시키고, asg에서 해당 노드보다 우선순위가 높은 노드에게 프로텍트 옵션을 주어야 한다.
+
+**카펜터 동작방식**
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/60e0c6773ce6235be763ae8bd13a97b27dd1bf15/Study/images/91_image.jpg)
+
+카펜터는 스케줄링이 안된 Pod를 발견하면 노드를 생성하며 스케줄링 안된 노드를 발견하면 해당 노드를 제거한다. 이를 각 프로비저닝, 디프로비저닝이라고 한다.
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/7e7354f0a7a71b68c5a17a62cc4bd2d8738d8760/Study/images/93_image.jpg)
+
+인스턴스 타입은 가드레일 방식으로 선언 가능하다.
+
+- 온디맨드로 띄울 지 스팟으로 띄울 지 선택 가능하다.
+- 스팟으로 띄운다면 가능한 다양한 인스턴스를 쓰는 것이 유리하다.
+
+둘 다 선언 했을 경우 최대한 가능한 Spot을 뜨게 된다. Spot이 없다면 자동으로 온디맨드로 띄워서 안전하다.
+
+[참고링크](https://www.youtube.com/watch?v=FPlCVVrCD64&t=15s)
+
+[참고링크-2](https://file.notion.so/f/s/dc43285b-5aed-4cf3-bfc2-509b2a67fbb4/CON405_How-to-monitor-and-reduce-your-compute-costs.pdf?id=2ea72faa-7248-4feb-8710-d143db7607a8&table=block&spaceId=a6af158e-5b0f-4e31-9d12-0d0b2805956a&expirationTimestamp=1685339450315&signature=5P8mu3L-NfMkHs2vj_mwaur8wbdPmZJCsKSyYZnCyvU&downloadName=CON405_How-to-monitor-and-reduce-your-compute-costs.pdf)
+
+
+**실습**
+
+
+```
+# 환경변수 정보 확인
+export | egrep 'ACCOUNT|AWS_|CLUSTER' | egrep -v 'SECRET|KEY'
+
+# 환경변수 설정
+export KARPENTER_VERSION=v0.27.5
+export TEMPOUT=$(mktemp)
+echo $KARPENTER_VERSION $CLUSTER_NAME $AWS_DEFAULT_REGION $AWS_ACCOUNT_ID $TEMPOUT
+
+# CloudFormation 스택으로 IAM Policy, Role, EC2 Instance Profile 생성 : 3분 정도 소요
+curl -fsSL https://karpenter.sh/"${KARPENTER_VERSION}"/getting-started/getting-started-with-karpenter/cloudformation.yaml  > $TEMPOUT \
+&& aws cloudformation deploy \
+  --stack-name "Karpenter-${CLUSTER_NAME}" \
+  --template-file "${TEMPOUT}" \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides "ClusterName=${CLUSTER_NAME}"
+
+# 클러스터 생성 : myeks2 EKS 클러스터 생성 19분 정도 소요
+eksctl create cluster -f - <<EOF
+---
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+metadata:
+  name: ${CLUSTER_NAME}
+  region: ${AWS_DEFAULT_REGION}
+  version: "1.24"
+  tags:
+    karpenter.sh/discovery: ${CLUSTER_NAME}
+
+iam:
+  withOIDC: true
+  serviceAccounts:
+  - metadata:
+      name: karpenter
+      namespace: karpenter
+    roleName: ${CLUSTER_NAME}-karpenter
+    attachPolicyARNs:
+    - arn:aws:iam::${AWS_ACCOUNT_ID}:policy/KarpenterControllerPolicy-${CLUSTER_NAME}
+    roleOnly: true
+
+iamIdentityMappings:
+- arn: "arn:aws:iam::${AWS_ACCOUNT_ID}:role/KarpenterNodeRole-${CLUSTER_NAME}"
+  username: system:node:{{EC2PrivateDNSName}}
+  groups:
+  - system:bootstrappers
+  - system:nodes
+
+managedNodeGroups:
+- instanceType: m5.large
+  amiFamily: AmazonLinux2
+  name: ${CLUSTER_NAME}-ng
+  desiredCapacity: 2
+  minSize: 1
+  maxSize: 10
+  iam:
+    withAddonPolicies:
+      externalDNS: true
+
+## Optionally run on fargate
+# fargateProfiles:
+# - name: karpenter
+#  selectors:
+#  - namespace: karpenter
+EOF
+
+# eks 배포 확인
+eksctl get cluster
+NAME    REGION          EKSCTL CREATED
+myeks2  ap-northeast-2  True
+
+eksctl get nodegroup --cluster $CLUSTER_NAME
+CLUSTER NODEGROUP       STATUS  CREATED                 MIN SIZE        MAX SIZE        DESIRED CAPACITY        INSTANCE TYPE   IMAGE ID        ASG NAME                                                TYPE
+myeks2  myeks2-ng       ACTIVE  2023-05-28T07:14:53Z    1               10              2                       m5.large        AL2_x86_64      eks-myeks2-ng-70c4309a-dac6-6da5-2742-2e1ac15ea645      managed
+
+eksctl get iamidentitymapping --cluster $CLUSTER_NAME
+ARN                                                                                             USERNAME                                GROUPS                                  ACCOUNT
+arn:aws:iam::485702506058:role/KarpenterNodeRole-myeks2                                         system:node:{{EC2PrivateDNSName}}       system:bootstrappers,system:nodes
+arn:aws:iam::485702506058:role/eksctl-myeks2-nodegroup-myeks2-ng-NodeInstanceRole-1HEFSZWHPVCFQ system:node:{{EC2PrivateDNSName}}       system:bootstrappers,system:nodes
+
+eksctl get iamserviceaccount --cluster $CLUSTER_NAME
+NAMESPACE       NAME            ROLE ARN
+karpenter       karpenter       arn:aws:iam::485702506058:role/myeks2-karpenter
+kube-system     aws-node        arn:aws:iam::485702506058:role/eksctl-myeks2-addon-iamserviceaccount-kube-s-Role1-14XMXLEPEM8QR
+
+eksctl get addon --cluster $CLUSTER_NAME
+2023-05-28 16:25:53 [ℹ]  Kubernetes version "1.24" in use by cluster "myeks2"
+2023-05-28 16:25:53 [ℹ]  getting all addons
+
+# [터미널1] eks-node-viewer
+cd ~/go/bin && ./eks-node-viewer
+
+2 nodes (450m/3860m) 11.7% cpu █████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ $0.236/hour | $172.280/month
+6 pods (0 pending 6 running 6 bound)
+
+ip-192-168-23-255.ap-northeast-2.compute.internal cpu ██████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  17% (4 pods) m5.large/$0.1180 On-Demand - Ready
+ip-192-168-63-157.ap-northeast-2.compute.internal cpu ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   6% (2 pods) m5.large/$0.1180 On-Demand - Ready
+
+# k8s 확인
+kubectl cluster-info
+kubectl get node --label-columns=node.kubernetes.io/instance-type,eks.amazonaws.com/capacityType,topology.kubernetes.io/zone
+kubectl get pod -n kube-system -owide
+kubectl describe cm -n kube-system aws-auth
+Name:         aws-auth
+Namespace:    kube-system
+Labels:       <none>
+Annotations:  <none>
+
+Data
+====
+mapRoles:
+----
+- groups:
+  - system:bootstrappers
+  - system:nodes
+  rolearn: arn:aws:iam::485702506058:role/KarpenterNodeRole-myeks2
+  username: system:node:{{EC2PrivateDNSName}}
+- groups:
+  - system:bootstrappers
+  - system:nodes
+  rolearn: arn:aws:iam::485702506058:role/eksctl-myeks2-nodegroup-myeks2-ng-NodeInstanceRole-1HEFSZWHPVCFQ
+  username: system:node:{{EC2PrivateDNSName}}
+
+mapUsers:
+----
+[]
+
+
+BinaryData
+====
+
+Events:  <none>
+
+# 카펜터 설치를 위한 환경 변수 설정 및 확인
+
+# 카펜터 설치를 위한 환경 변수 설정 및 확인
+export CLUSTER_ENDPOINT="$(aws eks describe-cluster --name ${CLUSTER_NAME} --query "cluster.endpoint" --output text)"
+export KARPENTER_IAM_ROLE_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${CLUSTER_NAME}-karpenter"
+echo $CLUSTER_ENDPOINT $KARPENTER_IAM_ROLE_ARN
+
+ EC2 Spot Fleet 사용을 위한 service-linked-role 생성 확인 : 만들어있는것을 확인하는 거라 아래 에러 출력이 정상!
+# If the role has already been successfully created, you will see:
+# An error occurred (InvalidInput) when calling the CreateServiceLinkedRole operation: Service role name AWSServiceRoleForEC2Spot has been taken in this account, please try a different suffix.
+aws iam create-service-linked-role --aws-service-name spot.amazonaws.com || true
+
+# docker logout : Logout of docker to perform an unauthenticated pull against the public ECR
+docker logout public.ecr.aws
+
+# karpenter 설치
+helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter --version ${KARPENTER_VERSION} --namespace karpenter --create-namespace \
+  --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=${KARPENTER_IAM_ROLE_ARN} \
+  --set settings.aws.clusterName=${CLUSTER_NAME} \
+  --set settings.aws.defaultInstanceProfile=KarpenterNodeInstanceProfile-${CLUSTER_NAME} \
+  --set settings.aws.interruptionQueueName=${CLUSTER_NAME} \
+  --set controller.resources.requests.cpu=1 \
+  --set controller.resources.requests.memory=1Gi \
+  --set controller.resources.limits.cpu=1 \
+  --set controller.resources.limits.memory=1Gi \
+  --wait
+  
+# 확인
+kubectl get-all -n karpenter
+kubectl get all -n karpenter
+kubectl get cm -n karpenter karpenter-global-settings -o jsonpath={.data} | jq
+kubectl get crd | grep karpenter
+awsnodetemplates.karpenter.k8s.aws           2023-05-28T07:29:22Z
+provisioners.karpenter.sh                    2023-05-28T07:29:22Z
+
+```
+
+**ExternalDNS, kube-ops-view**
+
+```
+MyDomain=senidin.com
+echo "export MyDomain=senidin.com" >> /etc/profile
+MyDnzHostedZoneId=$(aws route53 list-hosted-zones-by-name --dns-name "${MyDomain}." --query "HostedZones[0].Id" --output text)
+echo $MyDomain, $MyDnzHostedZoneId
+curl -s -O https://raw.githubusercontent.com/gasida/PKOS/main/aews/externaldns.yaml
+MyDomain=$MyDomain MyDnzHostedZoneId=$MyDnzHostedZoneId envsubst < externaldns.yaml | kubectl apply -f -
+
+# kube-ops-view
+helm repo add geek-cookbook https://geek-cookbook.github.io/charts/
+helm install kube-ops-view geek-cookbook/kube-ops-view --version 1.2.2 --set env.TZ="Asia/Seoul" --namespace kube-system
+kubectl patch svc -n kube-system kube-ops-view -p '{"spec":{"type":"LoadBalancer"}}'
+kubectl annotate service kube-ops-view -n kube-system "external-dns.alpha.kubernetes.io/hostname=kubeopsview.$MyDomain"
+echo -e "Kube Ops View URL = http://kubeopsview.$MyDomain:8080/#scale=1.5"
+```
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/8ad5bd0823878ff568e6e18d0b2578c38640340d/Study/images/94_image.jpg)
+
+**Create Provisioner**
+
+```
+#
+cat <<EOF | kubectl apply -f -
+apiVersion: karpenter.sh/v1alpha5
+kind: Provisioner
+metadata:
+  name: default
+spec:
+  requirements:
+    - key: karpenter.sh/capacity-type
+      operator: In
+      values: ["spot"]
+  limits:
+    resources:
+      cpu: 1000
+  providerRef:
+    name: default
+  ttlSecondsAfterEmpty: 30
+---
+apiVersion: karpenter.k8s.aws/v1alpha1
+kind: AWSNodeTemplate
+metadata:
+  name: default
+spec:
+  subnetSelector:
+    karpenter.sh/discovery: ${CLUSTER_NAME}
+  securityGroupSelector:
+    karpenter.sh/discovery: ${CLUSTER_NAME}
+EOF
+
+# 확인
+kubectl get awsnodetemplates,provisioners
+NAME                                        AGE
+awsnodetemplate.karpenter.k8s.aws/default   3s
+
+NAME                               AGE
+provisioner.karpenter.sh/default   3s
+
+```
+
+**Add optional monitoring with Grafana**
+
+```
+# pause 파드 1개에 CPU 1개 최소 보장 할당
+cat <<EOF | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inflate
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: inflate
+  template:
+    metadata:
+      labels:
+        app: inflate
+    spec:
+      terminationGracePeriodSeconds: 0
+      containers:
+        - name: inflate
+          image: public.ecr.aws/eks-distro/kubernetes/pause:3.7
+          resources:
+            requests:
+              cpu: 1
+EOF
+kubectl scale deployment inflate --replicas 5
+kubectl logs -f -n karpenter -l app.kubernetes.io/name=karpenter -c controller
+
+# 스팟 인스턴스 확인!
+aws ec2 describe-spot-instance-requests --filters "Name=state,Values=active" --output table
+kubectl get node -l karpenter.sh/capacity-type=spot -o jsonpath='{.items[0].metadata.labels}' | jq
+kubectl get node --label-columns=eks.amazonaws.com/capacityType,karpenter.sh/capacity-type,node.kubernetes.io/instance-type
+NAME                                                STATUS   ROLES    AGE   VERSION                CAPACITYTYPE   CAPACITY-TYPE   INSTANCE-TYPE
+ip-192-168-23-255.ap-northeast-2.compute.internal   Ready    <none>   34m   v1.24.13-eks-0a21954   ON_DEMAND                      m5.large
+ip-192-168-63-157.ap-northeast-2.compute.internal   Ready    <none>   34m   v1.24.13-eks-0a21954   ON_DEMAND                      m5.large
+
+# Now, delete the deployment. After 30 seconds (ttlSecondsAfterEmpty), Karpenter should terminate the now empty nodes.
+kubectl delete deployment inflate
+kubectl logs -f -n karpenter -l app.kubernetes.io/name=karpenter -c controller
+```
+
+**Consolidation**
+
+```
+kubectl delete provisioners default
+cat <<EOF | kubectl apply -f -
+apiVersion: karpenter.sh/v1alpha5
+kind: Provisioner
+metadata:
+  name: default
+spec:
+  consolidation:
+    enabled: true
+  labels:
+    type: karpenter
+  limits:
+    resources:
+      cpu: 1000
+      memory: 1000Gi
+  providerRef:
+    name: default
+  requirements:
+    - key: karpenter.sh/capacity-type
+      operator: In
+      values:
+        - on-demand
+    - key: node.kubernetes.io/instance-type
+      operator: In
+      values:
+        - c5.large
+        - m5.large
+        - m5.xlarge
+EOF
+
+#
+cat <<EOF | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inflate
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: inflate
+  template:
+    metadata:
+      labels:
+        app: inflate
+    spec:
+      terminationGracePeriodSeconds: 0
+      containers:
+        - name: inflate
+          image: public.ecr.aws/eks-distro/kubernetes/pause:3.7
+          resources:
+            requests:
+              cpu: 1
+EOF
+kubectl scale deployment inflate --replicas 12
+kubectl logs -f -n karpenter -l app.kubernetes.io/name=karpenter -c controller
+
+# 인스턴스 확인
+# This changes the total memory request for this deployment to around 12Gi, 
+# which when adjusted to account for the roughly 600Mi reserved for the kubelet on each node means that this will fit on 2 instances of type m5.large:
+kubectl get node -l type=karpenter
+kubectl get node --label-columns=eks.amazonaws.com/capacityType,karpenter.sh/capacity-type
+kubectl get node --label-columns=node.kubernetes.io/instance-type,topology.kubernetes.io/zone
+
+# Next, scale the number of replicas back down to 5:
+kubectl scale deployment inflate --replicas 5
+
+kubectl logs -f -n karpenter -l app.kubernetes.io/name=karpenter -c controller
+2023-05-28T07:57:10.435Z        INFO    controller.provisioner  launching machine with 3 pods requesting {"cpu":"3125m","pods":"6"} from types m5.xlarge        {"commit": "698f22f-dirty", "provisioner": "default"}
+2023-05-28T07:57:10.440Z        INFO    controller.provisioner  launching machine with 3 pods requesting {"cpu":"3125m","pods":"6"} from types m5.xlarge        {"commit": "698f22f-dirty", "provisioner": "default"}
+2023-05-28T07:57:10.445Z        INFO    controller.provisioner  launching machine with 3 pods requesting {"cpu":"3125m","pods":"6"} from types m5.xlarge        {"commit": "698f22f-dirty", "provisioner": "default"}
+2023-05-28T07:57:10.906Z        DEBUG   controller.provisioner.cloudprovider    created launch template {"commit": "698f22f-dirty", "provisioner": "default", "launch-template-name": "karpenter.k8s.aws/12231572537772030512", "launch-template-id": "lt-0d08315f89160cb14"}
+2023-05-28T07:57:12.670Z        INFO    controller.provisioner.cloudprovider    launched instance       {"commit": "698f22f-dirty", "provisioner": "default", "id": "i-06684f30e15bb44b6", "hostname": "ip-192-168-89-241.ap-northeast-2.compute.internal", "instance-type": "m5.xlarge", "zone": "ap-northeast-2c", "capacity-type": "on-demand", "capacity": {"cpu":"4","ephemeral-storage":"20Gi","memory":"15155Mi","pods":"58"}}
+2023-05-28T07:57:12.671Z        INFO    controller.provisioner.cloudprovider    launched instance       {"commit": "698f22f-dirty", "provisioner": "default", "id": "i-0d3723301c4b5b276", "hostname": "ip-192-168-176-74.ap-northeast-2.compute.internal", "instance-type": "m5.xlarge", "zone": "ap-northeast-2c", "capacity-type": "on-demand", "capacity": {"cpu":"4","ephemeral-storage":"20Gi","memory":"15155Mi","pods":"58"}}
+2023-05-28T07:57:12.671Z        INFO    controller.provisioner.cloudprovider    launched instance       {"commit": "698f22f-dirty", "provisioner": "default", "id": "i-0ede3e735f8ca9dcf", "hostname": "ip-192-168-182-123.ap-northeast-2.compute.internal", "instance-type": "m5.xlarge", "zone": "ap-northeast-2c", "capacity-type": "on-demand", "capacity": {"cpu":"4","ephemeral-storage":"20Gi","memory":"15155Mi","pods":"58"}}
+2023-05-28T07:57:12.671Z        INFO    controller.provisioner.cloudprovider    launched instance       {"commit": "698f22f-dirty", "provisioner": "default", "id": "i-06089f3935638db46", "hostname": "ip-192-168-156-211.ap-northeast-2.compute.internal", "instance-type": "m5.xlarge", "zone": "ap-northeast-2d", "capacity-type": "on-demand", "capacity": {"cpu":"4","ephemeral-storage":"20Gi","memory":"15155Mi","pods":"58"}}
+2023-05-28T07:59:32.279Z        DEBUG   controller      deleted launch template {"commit": "698f22f-dirty", "launch-template": "karpenter.k8s.aws/2612807800920218174"}
+2023-05-28T07:59:32.363Z        DEBUG   controller      deleted launch template {"commit": "698f22f-dirty", "launch-template": "karpenter.k8s.aws/12231572537772030512"}
+2023-05-28T07:29:32.241Z        DEBUG   controller      discovered kube dns     {"commit": "698f22f-dirty", "kube-dns-ip": "10.100.0.10"}
+2023-05-28T07:29:32.242Z        DEBUG   controller      discovered version      {"commit": "698f22f-dirty", "version": "v0.27.5"}
+2023/05/28 07:29:32 Registering 2 clients
+2023/05/28 07:29:32 Registering 2 informer factories
+2023/05/28 07:29:32 Registering 3 informers
+2023/05/28 07:29:32 Registering 5 controllers
+2023-05-28T07:29:32.243Z        INFO    controller      Starting server {"commit": "698f22f-dirty", "path": "/metrics", "kind": "metrics", "addr": "[::]:8080"}
+2023-05-28T07:29:32.243Z        INFO    controller      Starting server {"commit": "698f22f-dirty", "kind": "health probe", "addr": "[::]:8081"}
+I0528 07:29:32.344253       1 leaderelection.go:248] attempting to acquire leader lease karpenter/karpenter-leader-election...
+2023-05-28T07:29:32.385Z        INFO    controller      Starting informers...   {"commit": "698f22f-dirty"}
+
+kubectl logs -f -n karpenter -l app.kubernetes.io/name=karpenter -c controller
+2023-05-28T07:29:32.241Z        DEBUG   controller      discovered kube dns     {"commit": "698f22f-dirty", "kube-dns-ip": "10.100.0.10"}
+2023-05-28T07:29:32.242Z        DEBUG   controller      discovered version      {"commit": "698f22f-dirty", "version": "v0.27.5"}
+2023/05/28 07:29:32 Registering 2 clients
+2023/05/28 07:29:32 Registering 2 informer factories
+2023/05/28 07:29:32 Registering 3 informers
+2023/05/28 07:29:32 Registering 5 controllers
+2023-05-28T07:29:32.243Z        INFO    controller      Starting server {"commit": "698f22f-dirty", "path": "/metrics", "kind": "metrics", "addr": "[::]:8080"}
+2023-05-28T07:29:32.243Z        INFO    controller      Starting server {"commit": "698f22f-dirty", "kind": "health probe", "addr": "[::]:8081"}
+I0528 07:29:32.344253       1 leaderelection.go:248] attempting to acquire leader lease karpenter/karpenter-leader-election...
+2023-05-28T07:29:32.385Z        INFO    controller      Starting informers...   {"commit": "698f22f-dirty"}
+2023-05-28T07:57:10.906Z        DEBUG   controller.provisioner.cloudprovider    created launch template {"commit": "698f22f-dirty", "provisioner": "default", "launch-template-name": "karpenter.k8s.aws/12231572537772030512", "launch-template-id": "lt-0d08315f89160cb14"}
+2023-05-28T07:57:12.670Z        INFO    controller.provisioner.cloudprovider    launched instance       {"commit": "698f22f-dirty", "provisioner": "default", "id": "i-06684f30e15bb44b6", "hostname": "ip-192-168-89-241.ap-northeast-2.compute.internal", "instance-type": "m5.xlarge", "zone": "ap-northeast-2c", "capacity-type": "on-demand", "capacity": {"cpu":"4","ephemeral-storage":"20Gi","memory":"15155Mi","pods":"58"}}
+2023-05-28T07:57:12.671Z        INFO    controller.provisioner.cloudprovider    launched instance       {"commit": "698f22f-dirty", "provisioner": "default", "id": "i-0d3723301c4b5b276", "hostname": "ip-192-168-176-74.ap-northeast-2.compute.internal", "instance-type": "m5.xlarge", "zone": "ap-northeast-2c", "capacity-type": "on-demand", "capacity": {"cpu":"4","ephemeral-storage":"20Gi","memory":"15155Mi","pods":"58"}}
+2023-05-28T07:57:12.671Z        INFO    controller.provisioner.cloudprovider    launched instance       {"commit": "698f22f-dirty", "provisioner": "default", "id": "i-0ede3e735f8ca9dcf", "hostname": "ip-192-168-182-123.ap-northeast-2.compute.internal", "instance-type": "m5.xlarge", "zone": "ap-northeast-2c", "capacity-type": "on-demand", "capacity": {"cpu":"4","ephemeral-storage":"20Gi","memory":"15155Mi","pods":"58"}}
+2023-05-28T07:57:12.671Z        INFO    controller.provisioner.cloudprovider    launched instance       {"commit": "698f22f-dirty", "provisioner": "default", "id": "i-06089f3935638db46", "hostname": "ip-192-168-156-211.ap-northeast-2.compute.internal", "instance-type": "m5.xlarge", "zone": "ap-northeast-2d", "capacity-type": "on-demand", "capacity": {"cpu":"4","ephemeral-storage":"20Gi","memory":"15155Mi","pods":"58"}}
+2023-05-28T07:59:32.279Z        DEBUG   controller      deleted launch template {"commit": "698f22f-dirty", "launch-template": "karpenter.k8s.aws/2612807800920218174"}
+2023-05-28T07:59:32.363Z        DEBUG   controller      deleted launch template {"commit": "698f22f-dirty", "launch-template": "karpenter.k8s.aws/12231572537772030512"}
+2023-05-28T08:01:03.276Z        INFO    controller.deprovisioning       deprovisioning via consolidation delete, terminating 1 machines ip-192-168-182-123.ap-northeast-2.compute.internal/m5.xlarge/on-demand {"commit": "698f22f-dirty"}
+
+# 인스턴스 확인
+kubectl get node -l type=karpenter
+NAME                                                 STATUS   ROLES    AGE     VERSION
+ip-192-168-156-211.ap-northeast-2.compute.internal   Ready    <none>   4m33s   v1.24.13-eks-0a21954
+ip-192-168-89-241.ap-northeast-2.compute.internal    Ready    <none>   4m33s   v1.24.13-eks-0a21954
+
+kubectl get node --label-columns=eks.amazonaws.com/capacityType,karpenter.sh/capacity-type
+NAME                                                 STATUS   ROLES    AGE     VERSION                CAPACITYTYPE   CAPACITY-TYPE
+ip-192-168-156-211.ap-northeast-2.compute.internal   Ready    <none>   4m35s   v1.24.13-eks-0a21954                  on-demand
+ip-192-168-23-255.ap-northeast-2.compute.internal    Ready    <none>   45m     v1.24.13-eks-0a21954   ON_DEMAND
+ip-192-168-63-157.ap-northeast-2.compute.internal    Ready    <none>   45m     v1.24.13-eks-0a21954   ON_DEMAND
+ip-192-168-89-241.ap-northeast-2.compute.internal    Ready    <none>   4m35s   v1.24.13-eks-0a21954                  on-demand
+
+kubectl get node --label-columns=node.kubernetes.io/instance-type,topology.kubernetes.io/zone
+NAME                                                 STATUS   ROLES    AGE     VERSION                INSTANCE-TYPE   ZONE
+ip-192-168-156-211.ap-northeast-2.compute.internal   Ready    <none>   4m38s   v1.24.13-eks-0a21954   m5.xlarge       ap-northeast-2d
+ip-192-168-23-255.ap-northeast-2.compute.internal    Ready    <none>   45m     v1.24.13-eks-0a21954   m5.large        ap-northeast-2b
+ip-192-168-63-157.ap-northeast-2.compute.internal    Ready    <none>   45m     v1.24.13-eks-0a21954   m5.large        ap-northeast-2d
+ip-192-168-89-241.ap-northeast-2.compute.internal    Ready    <none>   4m38s   v1.24.13-eks-0a21954   m5.xlarge       ap-northeast-2c
+
+# 삭제
+kubectl delete deployment inflate
+```
+
+**실습 리소스 삭제**
+
+```
+kubectl delete svc -n monitoring grafana
+helm uninstall -n kube-system kube-ops-view
+helm uninstall karpenter --namespace karpenter
+
+# 위 삭제 완료 후 아래 삭제
+aws ec2 describe-launch-templates --filters Name=tag:karpenter.k8s.aws/cluster,Values=${CLUSTER_NAME} |
+    jq -r ".LaunchTemplates[].LaunchTemplateName" |
+    xargs -I{} aws ec2 delete-launch-template --launch-template-name {}
+
+# 클러스터 삭제
+eksctl delete cluster --name "${CLUSTER_NAME}"
+
+#
+aws cloudformation delete-stack --stack-name "Karpenter-${CLUSTER_NAME}"
+
+# 위 삭제 완료 후 아래 삭제
+aws cloudformation delete-stack --stack-name ${CLUSTER_NAME}
+```
+
+
+
+
+
+
+
+
+
+
 
 
 
