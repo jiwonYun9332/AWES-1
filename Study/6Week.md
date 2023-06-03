@@ -363,7 +363,64 @@ kubectl delete ns dev-team infra-team
 
 ![image](https://github.com/jiwonYun9332/AWES-1/blob/0f5211d440ad20d6709e10fa72e76ed3ddf0b766/Study/images/101_image.jpg)
 
-쿠버네티스 API 서버의 인증 인가 처리 단계
+**RBAC 관련 krew 플러그인**
+
+```
+# 설치
+kubectl krew install access-matrix rbac-tool rbac-view rolesum
+
+# Show an RBAC access matrix for server resources
+kubectl access-matrix # Review access to cluster-scoped resources
+kubectl access-matrix --namespace default # Review access to namespaced resources in 'default'
+
+# RBAC Lookup by subject (user/group/serviceaccount) name
+kubectl rbac-tool lookup
+kubectl rbac-tool lookup system:masters
+  SUBJECT        | SUBJECT TYPE | SCOPE       | NAMESPACE | ROLE
++----------------+--------------+-------------+-----------+---------------+
+  system:masters | Group        | ClusterRole |           | cluster-admin
+
+kubectl rbac-tool lookup system:nodes # eks:node-bootstrapper
+kubectl rbac-tool lookup system:bootstrappers # eks:node-bootstrapper
+kubectl describe ClusterRole eks:node-bootstrapper
+
+# RBAC List Policy Rules For subject (user/group/serviceaccount) name
+kubectl rbac-tool policy-rules
+kubectl rbac-tool policy-rules -e '^system:.*'
+
+# Generate ClusterRole with all available permissions from the target cluster
+kubectl rbac-tool show
+
+# Shows the subject for the current context with which one authenticates with the cluster
+kubectl rbac-tool whoami
+{Username: "kubernetes-admin",
+ UID:      "aws-iam-authenticator:911283.....:AIDA5ILF2FJ......",
+ Groups:   ["system:masters",
+            "system:authenticated"],
+ Extra:    {accessKeyId:  ["AKIA5ILF2FJ....."],
+            arn:          ["arn:aws:iam::911283....:user/admin"],
+            canonicalArn: ["arn:aws:iam::911283....:user/admin"],
+            principalId:  ["AIDA5ILF2FJ....."],
+            sessionName:  [""]}}
+
+# Summarize RBAC roles for subjects : ServiceAccount(default), User, Group
+kubectl rolesum -h
+kubectl rolesum aws-node -n kube-system
+kubectl rolesum -k User system:kube-proxy
+kubectl rolesum -k Group system:masters
+
+# [터미널1] A tool to visualize your RBAC permissions
+kubectl rbac-view
+INFO[0000] Getting K8s client
+INFO[0000] serving RBAC View and http://localhost:8800
+
+## 이후 해당 작업용PC 공인 IP:8800 웹 접속
+echo -e "RBAC View Web http://$(curl -s ipinfo.io/ip):8800"
+```
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/be8aa47978827b0062178f33a3f4af44c0e4abf4/Study/images/108_image.jpg)
+
+**쿠버네티스 API 서버의 인증 인가 처리 단계**
 
 쿠버네티스 API 서버는 하나 이상의 인증 플러그인을 구성할 수 있고 이 플러그인 중에서 인증 요청을 처리하면
 나머지 플러그인의 호출을 뛰어넘어서 인가 단계로 진행된다.
@@ -403,21 +460,292 @@ kubectl 명령을 실행했을 때의 흐름
 
 ![image](https://github.com/jiwonYun9332/AWES-1/blob/07459c8bf909cfb74c0be7ba4bdbb14445da76a5/Study/images/103_image.jpg)
 
+![image](https://github.com/jiwonYun9332/AWES-1/blob/bffb41048523437d1fb2fbce8f2d2a0fb656a621/Study/images/109_image.jpg)
 
+**kubectl 명령 → aws eks get-token → EKS Service endpoint(STS)에 토큰 요청 ⇒ 응답값 디코드(Pre-Signed URL 이며 GetCallerIdentity..)**
 
+- STS Security Token Service : AWS 리소스에 대한 액세스를 제어할 수 있는 임시 보안 자격 증명(STS)을 생성하여 신뢰받는 사용자에게 제공할 수 있음
 
+- AWS CLI 버전 1.16.156 이상에서는 별도 aws-iam-authenticator 설치 없이 aws eks get-token으로 사용 가능
 
+```
+# sts caller id의 ARN 확인
+aws sts get-caller-identity --query Arn
+"arn:aws:iam::<자신의 Account ID>:user/admin"
 
+# kubeconfig 정보 확인
+cat ~/.kube/config | yh
+...
+- name: admin@myeks.ap-northeast-2.eksctl.io
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1beta1
+      args:
+      - eks
+      - get-token
+      - --output
+      - json
+      - --cluster-name
+      - myeks
+      - --region
+      - ap-northeast-2
+      command: aws
+      env:
+      - name: AWS_STS_REGIONAL_ENDPOINTS
+        value: regional
+      interactiveMode: IfAvailable
+      provideClusterInfo: false
 
+# Get  a token for authentication with an Amazon EKS cluster.
+# This can be used as an alternative to the aws-iam-authenticator.
+aws eks get-token help
 
+# 임시 보안 자격 증명(토큰)을 요청 : expirationTimestamp 시간경과 시 토큰 재발급됨
+aws eks get-token --cluster-name $CLUSTER_NAME | jq
+aws eks get-token --cluster-name $CLUSTER_NAME | jq -r '.status.token'
+```
 
+**kubectl의 Client-Go 라이브러리는 Pre-Signed URL을 Bearer Token으로 EKS API Cluster Endpoint로 요청을 보냄**
 
+![image](https://github.com/jiwonYun9332/AWES-1/blob/7bb399d0136942322d1ced795f381b6d6254113a/Study/images/110_image.jpg)
 
+![image](https://github.com/jiwonYun9332/AWES-1/blob/7bb399d0136942322d1ced795f381b6d6254113a/Study/images/111_image.jpg)
 
+**EKS API는 Token Review 를 Webhook token authenticator에 요청**
 
+```
+# tokenreviews api 리소스 확인 
+kubectl api-resources | grep authentication
+tokenreviews                                   authentication.k8s.io/v1               false        TokenReview
 
+# List the fields for supported resources.
+kubectl explain tokenreviews
+...
+DESCRIPTION:
+     TokenReview attempts to authenticate a token to a known user. Note:
+     TokenReview requests may be cached by the webhook token authenticator
+     plugin in the kube-apiserver.
+```
 
-**핵심** : 인증은 AWS IAM, 인가는 K8S RBAC에서 처리
+**쿠버네티스 RBAC 인가를 처리**
+
+- 해당 IAM User/Role 확인이 되면 k8s aws-auth configmap에서 mapping 정보를 확인
+- aws-auth 컨피그맵에 'IAM 사용자, 역할 arm, K8S 오브젝트' 로 권한 확인 후 k8s 인가 허가가 되면 최종적으로 동작 실행
+- EKS를 생성한 IAM principal은 aws-auth 와 상관없이 kubernetes-admin Username으로 system:masters 그룹에 권한을 가짐
+
+```
+# Webhook api 리소스 확인 
+kubectl api-resources | grep Webhook
+mutatingwebhookconfigurations                  admissionregistration.k8s.io/v1        false        MutatingWebhookConfiguration
+validatingwebhookconfigurations                admissionregistration.k8s.io/v1        false        ValidatingWebhookConfiguration
+
+# validatingwebhookconfigurations 리소스 확인
+kubectl get validatingwebhookconfigurations
+NAME                                        WEBHOOKS   AGE
+eks-aws-auth-configmap-validation-webhook   1          50m
+vpc-resource-validating-webhook             2          50m
+aws-load-balancer-webhook                   3          8m27s
+
+kubectl get validatingwebhookconfigurations eks-aws-auth-configmap-validation-webhook -o yaml | kubectl neat | yh
+
+# aws-auth 컨피그맵 확인
+kubectl get cm -n kube-system aws-auth -o yaml | kubectl neat | yh
+apiVersion: v1
+kind: ConfigMap
+metadata: 
+  name: aws-auth
+  namespace: kube-system
+data: 
+  mapRoles: |
+    - groups:
+      - system:bootstrappers
+      - system:nodes
+      rolearn: arn:aws:iam::91128.....:role/eksctl-myeks-nodegroup-ng1-NodeInstanceRole-1OS1WSTV0YB9X
+      username: system:node:{{EC2PrivateDNSName}}
+#---<아래 생략(추정), ARN은 EKS를 설치한 IAM User , 여기 있었을경우 만약 실수로 삭제 시 복구가 가능했을까?---
+  mapUsers: |
+    - groups:
+      - system:masters
+      userarn: arn:aws:iam::111122223333:user/admin
+      username: kubernetes-admin
+
+# EKS 설치한 IAM User 정보 >> system:authenticated는 어떤 방식으로 추가가 되었는지 궁금???
+kubectl rbac-tool whoami
+{Username: "kubernetes-admin",
+ UID:      "aws-iam-authenticator:9112834...:AIDA5ILF2FJIR2.....",
+ Groups:   ["system:masters",
+            "system:authenticated"],
+...
+
+# system:masters , system:authenticated 그룹의 정보 확인
+kubectl rbac-tool lookup system:masters
+kubectl rbac-tool lookup system:authenticated
+kubectl rolesum -k Group system:masters
+kubectl rolesum -k Group system:authenticated
+
+# system:masters 그룹이 사용 가능한 클러스터 롤 확인 : cluster-admin
+kubectl describe clusterrolebindings.rbac.authorization.k8s.io cluster-admin
+Name:         cluster-admin
+Labels:       kubernetes.io/bootstrapping=rbac-defaults
+Annotations:  rbac.authorization.kubernetes.io/autoupdate: true
+Role:
+  Kind:  ClusterRole
+  Name:  cluster-admin
+Subjects:
+  Kind   Name            Namespace
+  ----   ----            ---------
+  Group  system:masters
+
+# cluster-admin 의 PolicyRule 확인 : 모든 리소스  사용 가능!
+kubectl describe clusterrole cluster-admin
+Name:         cluster-admin
+Labels:       kubernetes.io/bootstrapping=rbac-defaults
+Annotations:  rbac.authorization.kubernetes.io/autoupdate: true
+PolicyRule:
+  Resources  Non-Resource URLs  Resource Names  Verbs
+  ---------  -----------------  --------------  -----
+  *.*        []                 []              [*]
+             [*]                []              [*]
+
+# system:authenticated 그룹이 사용 가능한 클러스터 롤 확인
+kubectl describe ClusterRole system:discovery
+kubectl describe ClusterRole system:public-info-viewer
+kubectl describe ClusterRole system:basic-user
+kubectl describe ClusterRole eks:podsecuritypolicy:privileged
+```
+
+**데브옵스 신입 사원을 위한 myeks-bastion-2에 설정 해보기**
+
+[myeks-bastion] testuser 사용자 생성 
+
+```
+# testuser 사용자 생성
+aws iam create-user --user-name testuser
+
+# 사용자에게 프로그래밍 방식 액세스 권한 부여
+aws iam create-access-key --user-name testuser
+{
+    "AccessKey": {
+        "UserName": "testuser",
+        "AccessKeyId": "AKIA5ILF2##",
+        "Status": "Active",
+        "SecretAccessKey": "TxhhwsU8##",
+        "CreateDate": "2023-05-23T07:40:09+00:00"
+    }
+}
+# testuser 사용자에 정책을 추가
+aws iam attach-user-policy --policy-arn arn:aws:iam::aws:policy/AdministratorAccess --user-name testuser
+
+# get-caller-identity 확인
+aws sts get-caller-identity --query Arn
+"arn:aws:iam::911283464785:user/admin"
+
+# EC2 IP 확인 : myeks-bastion-EC2-2 PublicIPAdd 확인
+aws ec2 describe-instances --query "Reservations[*].Instances[*].{PublicIPAdd:PublicIpAddress,PrivateIPAdd:PrivateIpAddress,InstanceName:Tags[?Key=='Name']|[0].Value,Status:State.Name}" --filters Name=instance-state-name,Values=running --output table
+```
+
+[myeks-bastion-2] testuser 자격증명 설정 및 확인
+
+```
+# get-caller-identity 확인 >> 왜 안될까요?
+aws sts get-caller-identity --query Arn
+
+# testuser 자격증명 설정
+aws configure
+AWS Access Key ID [None]: AKIA5ILF2F...
+AWS Secret Access Key [None]: ePpXdhA3cP....
+Default region name [None]: ap-northeast-2
+
+# get-caller-identity 확인
+aws sts get-caller-identity --query Arn
+"arn:aws:iam::911283464785:user/testuser"
+
+# kubectl 시도 >> testuser도 AdministratorAccess 권한을 가지고 있는데, 실패 이유는?
+kubectl get node -v6
+ls ~/.kube
+```
+
+[myeks-bastion] testuser에 system:masters 그룹 부여로 EKS 관리자 수준 권한 설정
+
+```
+# 방안1 : eksctl 사용 >> iamidentitymapping 실행 시 aws-auth 컨피그맵 작성해줌
+# Creates a mapping from IAM role or user to Kubernetes user and groups
+eksctl create iamidentitymapping --cluster $CLUSTER_NAME --username testuser --group system:masters --arn arn:aws:iam::$ACCOUNT_ID:user/testuser
+
+# 확인
+kubectl get cm -n kube-system aws-auth -o yaml | kubectl neat | yh
+
+eksctl get iamidentitymapping --cluster $CLUSTER_NAME
+
+ARN                                                                                     USERNAME                                GROUPS                         ACCOUNT
+arn:aws:iam::485702506058:role/eksctl-myeks-nodegroup-ng1-NodeInstanceRole-RIQSTAN95G8X system:node:{{EC2PrivateDNSName}}       system:bootstrappers,system:nodes
+arn:aws:iam::485702506058:user/testuser                                                 testuser                                system:masters
+```
+
+[myeks-bastion-2] testuser kubeconfig 생성 및 kubectl 사용 확인
+
+```
+# testuser kubeconfig 생성 >> aws eks update-kubeconfig 실행이 가능한 이유는?, 3번 설정 후 약간의 적용 시간 필요
+aws eks update-kubeconfig --name $CLUSTER_NAME --user-alias testuser
+
+# 첫번째 bastic ec2의 config와 비교해보자
+cat ~/.kube/config | yh
+
+# kubectl 사용 확인
+kubectl ns default
+kubectl get node -v6
+
+# rbac-tool 후 확인 >> 기존 계정과 비교해보자 >> system:authenticated 는 system:masters 설정 시 따라오는 것 같은데, 추가 동작 원리는 모르겠네요???
+kubectl krew install rbac-tool && kubectl rbac-tool whoami
+{Username: "testuser",
+ UID:      "aws-iam-authenticator:485702506058:AIDAXCFRACZFIDVUHYBHK",
+ Groups:   ["system:masters",
+            "system:authenticated"],
+ Extra:    {accessKeyId:  ["AKIAXCFRACZFBLLPQMHY"],
+            arn:          ["arn:aws:iam::485702506058:user/testuser"],
+            canonicalArn: ["arn:aws:iam::485702506058:user/testuser"],
+            principalId:  ["AIDAXCFRACZFIDVUHYBHK"],
+```
+
+[myeks-bastion] testuser 의 Group 변경(system:masters → system:authenticated)으로 RBAC 동작 확인
+
+```
+# 방안2 : 아래 edit로 mapUsers 내용 직접 수정 system:authenticated
+kubectl edit cm -n kube-system aws-auth
+...
+
+# 확인
+eksctl get iamidentitymapping --cluster $CLUSTER_NAME
+```
+
+[myeks-bastion-2] testuser kubectl 사용 확인
+
+```
+# 시도
+kubectl get node -v6
+kubectl api-resources -v5
+```
+
+[myeks-bastion]에서 testuser IAM 맵핑 삭제
+
+```
+# testuser IAM 맵핑 삭제
+eksctl delete iamidentitymapping --cluster $CLUSTER_NAME --arn  arn:aws:iam::$ACCOUNT_ID:user/testuser
+
+# Get IAM identity mapping(s)
+eksctl get iamidentitymapping --cluster $CLUSTER_NAME
+kubectl get cm -n kube-system aws-auth -o yaml | yh
+```
+
+[myeks-bastion-2] testuser kubectl 사용 확인
+
+```
+# 시도
+kubectl get node -v6
+kubectl api-resources -v5
+```
+
+### EKS IRSA
 
 
 
