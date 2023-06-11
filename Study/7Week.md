@@ -876,6 +876,25 @@ echo $ARGOCD_SERVER
 argocd login $ARGOCD_SERVER --username admin --password $ARGO_PWD --insecure
 ```
 
+![image](https://github.com/jiwonYun9332/AWES-1/blob/7a5854c1d45392dd366bbfd2eecd768a32a0f5a7/Study/images/127_image.jpg)
+
+**간단 정리**
+
+형상 관리 도구인 'Git' 을 통해 개발자에게 익숙한 방식으로 인프라 또는 어플리케이션의 선언적인 설정파일을 관리하고 배포하는 일련의 프로세스를 말한다
+
+ArgoCD를 사용하여 이러한 GitOps 프로세스를 통해 K8S 클러스터 내부로 어플리케이션(도커 이미지)이 배포되는 과정은 아래와 같다.
+
+![image](https://github.com/jiwonYun9332/AWES-1/blob/116c4d23a6f0c6008705f4f6bb293688cffca1bd/Study/images/128_image.jpg)
+
+위 도식을 바탕으로 배포 프로세스는 다음과 같다.
+
+- 특정 마이크로서비스의 변경사항이 Source repo에 commit 된다.
+- Jenkins의 Build Job이 해당 변경사항을 감지하고 Docker Image 빌드를 수행한다.
+- 빌드의 결과물은 Amazon ECR Repository에 Push된다. (이미지 Tag는 Jenkins의 BuildNumber)
+- 해당 Tag를 kustomize 명령어로 GitOps repo의 deployement manifest에 업데이트한다.
+- 4단계에서 업데이트한 deployment의 변경사항이 GitOps repo에 commit 된다.
+- GitOps를 향해 polling을 수행하고 있던 ArgoCD가 변경사항을 감지하고 Synchronize(배포)를 수행한다.
+
 4. Crossplane
 
 Crossplane란?
