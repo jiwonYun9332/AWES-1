@@ -708,8 +708,104 @@ Github Token 발급
 
 ![image](https://github.com/jiwonYun9332/AWES-1/blob/6870a6ce454de27974b6bbbcbcb269a923c4e75a/Study/images/126_image.jpg)
 
+```
+# Flux CLI 설치
+curl -s https://fluxcd.io/install.sh | sudo bash
+. <(flux completion bash)
 
+# 버전 확인
+flux --version
+flux version 2.0.0-rc.5
 
+# 자신의 Github 토큰과 유저이름 변수 지정
+export GITHUB_TOKEN=<your-token>
+export GITHUB_USER=<your-username>
+# Bootstrap
+## Creates a git repository fleet-infra on your GitHub account.
+## Adds Flux component manifests to the repository.
+## Deploys Flux Components to your Kubernetes Cluster.
+## Configures Flux components to track the path /clusters/my-cluster/ in the repository.
+flux bootstrap github \
+  --owner=$GITHUB_USER \
+  --repository=fleet-infra \
+  --branch=main \
+  --path=./clusters/my-cluster \
+  --personal
+
+# 설치 확인
+kubectl get pods -n flux-system
+kubectl get-all -n flux-system
+kubectl get crd | grep fluxc
+kubectl get gitrepository -n flux-system
+flux-system   ssh://git@github.com/jiwonYun9332/fleet-infra   22s   True    stored artifact for revision 'main@sha1:111c32fda17cfee0f1e10929e350cdae25773b0a'
+```
+
+**gitops 도구 설치 - 링크 → flux 대시보드 설치 : admin / password**
+
+```
+# gitops 도구 설치
+curl --silent --location "https://github.com/weaveworks/weave-gitops/releases/download/v0.24.0/gitops-$(uname)-$(uname -m).tar.gz" | tar xz -C /tmp
+sudo mv /tmp/gitops /usr/local/bin
+gitops version
+
+# flux 대시보드 설치
+PASSWORD="password"
+gitops create dashboard ww-gitops --password=$PASSWORD
+
+# 확인
+flux -n flux-system get helmrelease
+kubectl -n flux-system get pod,svc
+```
+
+**Ingress 설정**
+
+```
+CERT_ARN=`aws acm list-certificates --query 'CertificateSummaryList[].CertificateArn[]' --output text`
+echo $CERT_ARN
+
+# Ingress 설정
+cat <<EOT > gitops-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gitops-ingress
+  annotations:
+    alb.ingress.kubernetes.io/certificate-arn: $CERT_ARN
+    alb.ingress.kubernetes.io/group.name: study
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}, {"HTTP":80}]'
+    alb.ingress.kubernetes.io/load-balancer-name: myeks-ingress-alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/success-codes: 200-399
+    alb.ingress.kubernetes.io/target-type: ip
+spec:
+  ingressClassName: alb
+  rules:
+  - host: gitops.$MyDomain
+    http:
+      paths:
+      - backend:
+          service:
+            name: ww-gitops-weave-gitops
+            port:
+              number: 9001
+        path: /
+        pathType: Prefix
+EOT
+kubectl apply -f gitops-ingress.yaml -n flux-system
+
+# 배포 확인
+kubectl get ingress -n flux-system
+
+# GitOps 접속 정보 확인 >> 웹 접속 후 정보 확인
+echo -e "GitOps Web https://gitops.$MyDomain"
+```
+
+**삭제**
+
+```
+flux uninstall --namespace=flux-system
+```
 
 3. ArgoCD
 
@@ -741,13 +837,119 @@ ArgoCD는 GitOps 방식으로 관리되는 Manifest(yaml) 파일의 변경사항
 "ArgoCD is a declarative, GitOps continuous delivery tool for Kubernetes."
 ```
 
+ArgoCD 설치
+
+```
+#Install Argo CD
+kubectl create namespace argocd
+
+# 매니페스트를 적용하여 필요한 Argo CD 쿠버네티스 오브젝트를 설치
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+# Download Argo CD CLI
+sudo curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+sudo chmod +x /usr/local/bin/argocd
+argocd: v2.7.4+a33baa3
+  BuildDate: 2023-06-05T19:16:50Z
+  GitCommit: a33baa301fe61b899dc8bbad9e554efbc77e0991
+  GitTreeState: clean
+  GoVersion: go1.19.9
+  Compiler: gc
+  Platform: linux/amd64
+FATA[0000] Argo CD server address unspecified
+```
+
 ArgoCD는 쿠버네티스를 위한 CD(Continuous Delivery) 툴이라고 할 수 있다.
 
 쿠버네티스의 구성 요소들을 관리 및 배포하기 위해서는 Manifest 파일을 구성하여 실행해야 하며,
 이러한 파일들은 계속해서 변경되기 때문에 지속적인 관리가 필요하다.
 이를 간편하게 Git으로 관리하는 방식이 GitOps이다, GitOps를 실현시키며 쿠버네티스에 배포까지 해주는 툴이 ArgoCD이다.
 
+**Access Argo CD API Server**
+
+```
+# Expose via public LB
+export ARGOCD_SERVER=`kubectl get svc argocd-server -n argocd -o json | jq --raw-output '.status.loadBalancer.ingress[0].hostname'`
+echo $ARGOCD_SERVER
+
+# Login (2 Options)
+argocd login $ARGOCD_SERVER --username admin --password $ARGO_PWD --insecure
+```
+
 4. Crossplane
+
+Crossplane란?
+
+Crossplane은 2018은 upbound 회사에서 만든 프로젝트이며 2020년 7월 CNCF의 Sandbox 프로젝트가 되었다.
+
+Crossplane은 애플리케이션에서 필요한 인프라스트럭처를 Kubernetes에서 직접 관리할 수 있게 해주는 프로젝트이다.
+
+**Crossplane 설치**
+
+```
+kubectl create namespace crossplane-system
+namespace/crossplane-system created
+
+helm repo add crossplane-stable https://charts.crossplane.io/stable
+"crossplane-stable" has been added to your repositories
+
+helm repo update
+Hang tight while we grab the latest from your chart repositories...
+...Successfully got an update from the "eks" chart repository
+...Successfully got an update from the "argo" chart repository
+...Successfully got an update from the "crossplane-stable" chart repository
+...Successfully got an update from the "prometheus-community" chart repository
+Update Complete. ⎈Happy Helming!⎈
+
+helm install crossplane --namespace crossplane-system crossplane-stable/crossplane --version 1.3.1
+NAME: crossplane
+LAST DEPLOYED: Sun Jun 11 20:36:57 2023
+NAMESPACE: crossplane-system
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+Release: crossplane
+
+Chart Name: crossplane
+Chart Description: Crossplane is an open source Kubernetes add-on that enables platform teams to assemble infrastructure from multiple vendors, and expose higher level self-service APIs for application teams to consume.
+Chart Version: 1.3.1
+Chart Application Version: 1.3.1
+
+Kube Version: v1.24.14-eks-c12679a
+
+# 설치 확인
+helm list -n crossplane-system
+NAME            NAMESPACE               REVISION        UPDATED                                 STATUS          CHART                   APP VERSION
+crossplane      crossplane-system       1               2023-06-11 20:36:57.428323574 +0900 KST deployed        crossplane-1.3.1        1.3.1
+
+# 설치 리소스 확인
+kubectl -n crossplane-system get all
+NAME                                           READY   STATUS    RESTARTS   AGE
+pod/crossplane-5b4d54cbf9-5lhp7                1/1     Running   0          31s
+pod/crossplane-rbac-manager-6d7f75b447-hzzlh   1/1     Running   0          31s
+
+NAME                                      READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/crossplane                1/1     1            1           31s
+deployment.apps/crossplane-rbac-manager   1/1     1            1           31s
+
+NAME                                                 DESIRED   CURRENT   READY   AGE
+replicaset.apps/crossplane-5b4d54cbf9                1         1         1       31s
+replicaset.apps/crossplane-rbac-manager-6d7f75b447   1         1         1       31s
+
+# crossplane CLI 설치
+curl -sL https://raw.githubusercontent.com/crossplane/crossplane/master/install.sh | sh
+kubectl plugin downloaded successfully! Run the following commands to finish installing it:
+
+sudo mv kubectl-crossplane /usr/local/bin
+kubectl crossplane --help
+
+Visit https://crossplane.io to get started. 🚀
+Have a nice day! 👋\n
+
+# 설치 확인
+kubectl crossplane --help
+```
 
 5. eksdemo
 
