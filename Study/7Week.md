@@ -807,7 +807,7 @@ echo -e "GitOps Web https://gitops.$MyDomain"
 flux uninstall --namespace=flux-system
 ```
 
-3. ArgoCD
+### 3. ArgoCD
 
 **GitOps란?**
 
@@ -895,7 +895,7 @@ ArgoCD를 사용하여 이러한 GitOps 프로세스를 통해 K8S 클러스터 
 - 4단계에서 업데이트한 deployment의 변경사항이 GitOps repo에 commit 된다.
 - GitOps를 향해 polling을 수행하고 있던 ArgoCD가 변경사항을 감지하고 Synchronize(배포)를 수행한다.
 
-4. Crossplane
+### 4. Crossplane
 
 ![image](https://github.com/jiwonYun9332/AWES-1/blob/e88f2bd6b95b4031b3d061680e28daf990dd1352/Study/images/129_image.jpg)
 
