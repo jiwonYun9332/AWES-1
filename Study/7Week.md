@@ -951,5 +951,17 @@ Have a nice day! 👋\n
 kubectl crossplane --help
 ```
 
-5. eksdemo
+**(실습 완료 후) 자원  삭제**
+```
+# Flux 실습 리소스 삭제
+flux uninstall --namespace=flux-system
+
+# Helm Chart 삭제
+helm uninstall -n monitoring kube-prometheus-stack
+
+# EKS 클러스터 삭제
+eksctl delete cluster --name $CLUSTER_NAME && aws cloudformation delete-stack --stack-name $CLUSTER_NAME
+```
+
+
 
