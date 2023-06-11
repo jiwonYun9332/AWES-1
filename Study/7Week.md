@@ -897,6 +897,8 @@ ArgoCD를 사용하여 이러한 GitOps 프로세스를 통해 K8S 클러스터 
 
 4. Crossplane
 
+![image](https://github.com/jiwonYun9332/AWES-1/blob/e88f2bd6b95b4031b3d061680e28daf990dd1352/Study/images/129_image.jpg)
+
 Crossplane란?
 
 Crossplane은 2018은 upbound 회사에서 만든 프로젝트이며 2020년 7월 CNCF의 Sandbox 프로젝트가 되었다.
